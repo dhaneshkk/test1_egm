@@ -1,0 +1,43 @@
+[package]
+name = "egm-dsh"
+version = "0.1.0"
+edition = "2024"
+description = "Elephant-Goldfish design workflow CLI with DeepSeek Harness as the coding agent (independent of Google's egm plugin)"
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
+libc = "0.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "3.5.0", features = ["json"] }
+# Rust port of PlantUML (MIT; its graphviz-pure dependency is EPL-2.0): the built-in diagram syntax check.
+# Pinned exactly: the crate is young and its API is unstable until 1.0.
+plantuml-core = { version = "=0.5.4", optional = true }
+
+[features]
+default = ["plantuml-core"]
+
+[profile.release]
+strip = true
+
+# The built-in diagram check (plantuml-core and its graphviz-pure layout engine) is most
+# of a clean build. It parses one small diagram at a time, so it needs little optimisation:
+# opt-level 1 for these crates alone cuts the build; egm-dsh's own code stays at 3.
+[profile.release.package.plantuml-core]
+opt-level = 1
+[profile.release.package.graphviz-pure]
+opt-level = 1
+[profile.release.package.graphviz-pure-core]
+opt-level = 1
+[profile.release.package.graphviz-pure-geom]
+opt-level = 1
+[profile.release.package.graphviz-pure-layout]
+opt-level = 1
+[profile.release.package.graphviz-pure-parser]
+opt-level = 1
+[profile.release.package.graphviz-pure-render]
+opt-level = 1

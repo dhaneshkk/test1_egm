@@ -1,0 +1,24 @@
+egm-dsh vendors the following files, unmodified, from the Elephant-Goldfish Model
+plugin by Google LLC:
+
+  https://github.com/google/elephant-goldfish-model
+  commit 3d0b34821ce88ad328b0c9bf0e06d7eb5f1cd669 (2026-10-23)
+
+  agents/comprehension.md
+  agents/design_critic.md
+  agents/implementation_readiness.md
+  agents/zoom_out.md
+  resources/document_standards/feature-spec-standard.md
+  resources/document_standards/implementation-readiness-standard.md
+  resources/document_standards/zoom-out-standard.md
+
+They are licensed under the Apache License, Version 2.0 (see LICENSE in this
+directory). Upstream ships no NOTICE file; this one records provenance only.
+
+egm-dsh extracts the role, REVIEW-mode instructions and audit vectors from each
+persona at run time and asks for JSON output instead of the upstream free-text
+format. Those runtime excerpts are a derivative of the files above.
+
+The upstream project states that it is "not an officially supported Google
+product". egm-dsh is an independent project, not affiliated with or endorsed by
+Google.

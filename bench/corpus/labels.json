@@ -1,0 +1,172 @@
+{
+ "tags-complete": {
+  "label": "ready",
+  "split": "dev"
+ },
+ "tags-no-old-data": {
+  "label": "not-ready",
+  "split": "dev"
+ },
+ "delete-reused-ids": {
+  "label": "not-ready",
+  "split": "dev"
+ },
+ "delete-stable-ids": {
+  "label": "ready",
+  "split": "dev"
+ },
+ "search-complete": {
+  "label": "ready",
+  "split": "dev"
+ },
+ "export-vague": {
+  "label": "not-ready",
+  "split": "dev"
+ },
+ "priority-no-old-data": {
+  "label": "not-ready",
+  "split": "dev"
+ },
+ "priority-complete": {
+  "label": "ready",
+  "split": "dev"
+ },
+ "purge-reused-ids": {
+  "label": "not-ready",
+  "split": "dev"
+ },
+ "purge-stable-ids": {
+  "label": "ready",
+  "split": "dev"
+ },
+ "edit-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "edit-no-error"
+ },
+ "edit-no-error": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "edit-complete",
+  "defect": "missing error case",
+  "lacks": "what an unknown id does",
+  "edits": 2
+ },
+ "pin-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "pin-no-old-data"
+ },
+ "pin-no-old-data": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "pin-complete",
+  "defect": "missing old-data rule",
+  "lacks": "how notes saved before pins behave",
+  "edits": 2
+ },
+ "done-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "done-contradiction"
+ },
+ "done-contradiction": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "done-complete",
+  "defect": "contradictory criterion",
+  "lacks": "agreement between the plan and a criterion",
+  "edits": 1
+ },
+ "due-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "due-vague-format"
+ },
+ "due-vague-format": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "due-complete",
+  "defect": "undefined format",
+  "lacks": "the date format and what happens to a bad date",
+  "edits": 2
+ },
+ "count-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "count-undefined-term"
+ },
+ "count-undefined-term": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "count-complete",
+  "defect": "undefined term",
+  "lacks": "which notes count",
+  "edits": 3
+ },
+ "csv-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "csv-no-quoting"
+ },
+ "csv-no-quoting": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "csv-complete",
+  "defect": "missing format rule",
+  "lacks": "how text with commas or quotes is written",
+  "edits": 2
+ },
+ "undo-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "undo-contradiction"
+ },
+ "undo-contradiction": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "undo-complete",
+  "defect": "contradictory criterion",
+  "lacks": "agreement between the plan and a criterion",
+  "edits": 1
+ },
+ "show-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "show-no-error"
+ },
+ "show-no-error": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "show-complete",
+  "defect": "missing error case",
+  "lacks": "what an unknown id does",
+  "edits": 2
+ },
+ "import-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "import-vague-format"
+ },
+ "import-vague-format": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "import-complete",
+  "defect": "undefined format",
+  "lacks": "the input file's format",
+  "edits": 2
+ },
+ "archive-complete": {
+  "label": "ready",
+  "split": "test",
+  "pair": "archive-reused-ids"
+ },
+ "archive-reused-ids": {
+  "label": "not-ready",
+  "split": "test",
+  "pair": "archive-complete",
+  "defect": "id reuse",
+  "lacks": "an id rule that keeps archived ids unique",
+  "edits": 3
+ }
+}

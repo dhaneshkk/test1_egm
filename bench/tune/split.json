@@ -1,0 +1,17 @@
+{
+ "train": [
+  "tags-complete",
+  "tags-no-old-data",
+  "delete-stable-ids",
+  "delete-reused-ids"
+ ],
+ "held_out": [
+  "priority-no-old-data",
+  "priority-complete",
+  "purge-reused-ids",
+  "purge-stable-ids",
+  "search-complete",
+  "export-vague"
+ ],
+ "why": "Held-out docs test the same defect classes (unhandled old data, id reuse after deletion) on different features, plus one vague and one clean doc, so a setup that memorises the training docs gains nothing."
+}

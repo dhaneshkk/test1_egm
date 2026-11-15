@@ -1,0 +1,118 @@
+# egm-dsh CI: unit tests, Lean proofs, end-to-end tests on the real dsh binary
+# (scripted model, no key), and a real-model smoke run when the
+# DEEPSEEK_API_KEY secret is set. The smoke job is the only one that spends money.
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: cargo test --release --locked
+
+  lean:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lean 4.31.0 (core only, no Mathlib)
+        run: |
+          curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
+          echo "$PWD/lean-4.31.0-linux/bin" >> "$GITHUB_PATH"
+      - name: Check every proof, and that none uses sorry
+        run: |
+          for f in proofs/*.lean; do
+            out=$(lean "$f" 2>&1) || { echo "$out"; exit 1; }
+            if echo "$out" | grep -q sorry; then echo "$f uses sorry"; exit 1; fi
+          done
+
+  e2e:
+    runs-on: ubuntu-24.04
+    needs: [rust, lean]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm install -g @deepseek-ai/dsh@latest
+      - name: Lean for the executable-spec test
+        run: |
+          curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
+          echo "LEAN_BIN=$PWD/lean-4.31.0-linux/bin/lean" >> "$GITHUB_ENV"
+      - run: cargo build --release --locked
+      - name: End-to-end tests (real dsh, scripted model)
+        run: |
+          set -e
+          E=target/release/egm-dsh; D=$(command -v dsh)
+          for p in balanced economy quality; do for r in dsh builtin; do python3 tests/e2e/run_dsh_e2e.py $E --preset $p --reviewers $r $D; done; done
+          python3 tests/e2e/run_steps_e2e.py $E $D
+          python3 tests/e2e/run_spec_e2e.py $E $D
+          python3 tests/e2e/run_safety_e2e.py $E $D
+          python3 tests/e2e/run_sessions_e2e.py $PWD/$E $D
+          python3 tests/e2e/run_escalate_e2e.py $E $D
+          python3 tests/e2e/run_room_e2e.py $E $D
+          python3 tests/e2e/run_loop_e2e.py $E $D
+          python3 tests/e2e/run_provider_e2e.py $E $D
+          python3 tests/e2e/run_tokens_e2e.py $E $D
+          python3 tests/e2e/run_view_e2e.py $E $D
+          python3 tests/e2e/run_fix_e2e.py $E $D
+          python3 tests/e2e/run_diagram_e2e.py $E $D
+          python3 tests/e2e/run_falsealarm_e2e.py $E $D
+          python3 tests/e2e/run_reviewers_e2e.py $E $D
+          python3 tests/e2e/run_vote_e2e.py $E $D
+          pip install --break-system-packages -q coverage || true   # coverage of changed lines (optional)
+          python3 tests/e2e/run_gate_e2e.py $E $D
+          python3 bench/review_metrics.py --selftest
+          python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
+          python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2
+      - name: Head-to-head spending controls (self-test; pinned upstream EGM)
+        run: |
+          git clone -q https://github.com/google/elephant-goldfish-model /tmp/egm-upstream
+          git -C /tmp/egm-upstream checkout -q 3d0b34821ce88ad328b0c9bf0e06d7eb5f1cd669
+          python3 tests/e2e/run_compare_flags_e2e.py target/release/egm-dsh /tmp/egm-upstream $(command -v dsh)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Harness² tuning (offline, pinned commit)
+        run: |
+          git clone -q https://github.com/google-research/harness2 /tmp/harness2
+          git -C /tmp/harness2 checkout -q 1cfe254e8d25b15f37048c3730134686abe60335
+          python -m pip install -q -e /tmp/harness2
+          python tests/e2e/run_tune_e2e.py target/release/egm-dsh
+
+  smoke-real:
+    runs-on: ubuntu-24.04
+    needs: [e2e]
+    if: ${{ github.event_name != 'pull_request' }}
+    env:
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm install -g @deepseek-ai/dsh@latest
+      - run: cargo build --release --locked
+      - name: Real DeepSeek models, budget-capped (skips without the secret)
+        run: python3 tests/smoke_real.py target/release/egm-dsh --preset economy --max-usd 1.0 --out smoke_real.json --dsh-command dsh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-real
+          path: smoke_real.json
+          if-no-files-found: ignore
