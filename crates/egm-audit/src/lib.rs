@@ -172,7 +172,8 @@ impl AuditLog for MemoryLog {
 
 // -------------------------------------------------------------------------------------- vesdb
 
-/// A Vesdb server, through its EventSourcingDB-compatible HTTP API.
+/// A Vesdb server, through its EventSourcingDB-compatible HTTP API. Reads use `POST`, which
+/// Vesdb accepts wherever it accepts `QUERY` (HTTP clients refuse the `QUERY` method on HTTP/1.1).
 ///
 /// Writes carry an `Idempotency-Key`. A `503` (a standby, or a failover in progress) and a
 /// connection error are retried with the same key and the same body, waiting `Retry-After`
@@ -243,7 +244,7 @@ impl VesdbLog {
 
     /// The signed receipt and inclusion proof for one event (needs the `audit` scope).
     pub fn receipt(&self, id: u64) -> Result<Value, AuditError> {
-        let (s, t) = self.call("QUERY", "/api/v2/tlog/receipt", &json!({"id": id.to_string()}).to_string(), None)?;
+        let (s, t) = self.call("POST", "/api/v2/tlog/receipt", &json!({"id": id.to_string()}).to_string(), None)?;
         ok_json(s, &t)
     }
 
@@ -251,7 +252,7 @@ impl VesdbLog {
     /// (needs the `audit` scope). An auditor checks it with `vesdb-verify`, trusting no server.
     pub fn bundle(&self, ids: &[u64]) -> Result<Value, AuditError> {
         let body = json!({"ids": ids.iter().map(u64::to_string).collect::<Vec<_>>()}).to_string();
-        let (s, t) = self.call("QUERY", "/api/v2/tlog/bundle", &body, None)?;
+        let (s, t) = self.call("POST", "/api/v2/tlog/bundle", &body, None)?;
         ok_json(s, &t)
     }
 }
@@ -316,7 +317,7 @@ impl AuditLog for VesdbLog {
 
     fn history(&self, project: &str, feature: Option<&str>) -> Result<Vec<Written>, AuditError> {
         let body = json!({"subject": subject(project, feature), "options": {"recursive": feature.is_none()}}).to_string();
-        let (s, t) = self.call("QUERY", "/api/v2/data/read-events", &body, None)?;
+        let (s, t) = self.call("POST", "/api/v2/data/read-events", &body, None)?;
         parse_events(s, &t)
     }
 }
