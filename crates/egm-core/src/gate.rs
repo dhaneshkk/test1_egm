@@ -393,6 +393,13 @@ pub fn gate(p: &Project, slugs: &[String], all: bool, with_mutation: bool) -> an
     for slug in &list {
         ui::egm(&format!("evidence gate: {slug}"));
         let rec = check(p, slug, with_mutation, false)?;
+        crate::events::emit("gate.verdict", slug, serde_json::json!({
+            "pass": rec.passed,
+            "doc_hash": rec.doc_hash.to_string(),
+            "checks": rec.checks.iter().map(|c| serde_json::json!({"name": c.name, "ok": c.ok})).collect::<Vec<_>>(),
+            "mutation": rec.mutation.as_ref().map(|m| serde_json::json!({"killed": m.killed, "tried": m.tried})),
+            "tier": rec.tier,
+        }));
         print_checks(&rec);
         if let Some(m) = &rec.mutation {
             for s in m.survivors.iter().take(10) {
@@ -511,7 +518,7 @@ pub fn evidence_cmd(p: &Project, slug: &str, out: Option<&Path>, with_mutation: 
             std::fs::write(path, &md)?;
             ui::ok(&format!("evidence for `{slug}` written to {} (gate {})", path.display(), if rec.passed { "passed" } else { "FAILED" }));
         }
-        None => println!("{md}"),
+        None => crate::ui::out(md.to_string()),
     }
     Ok(rec.passed)
 }

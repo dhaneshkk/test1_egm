@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn the_readme_diagrams_are_well_formed() {
-        let readme = include_str!("../README.md");
+        let readme = include_str!("../../../README.md");
         let bs = blocks(readme);
         assert!(bs.len() >= 3, "the README shows its flows as diagrams");
         for b in bs {

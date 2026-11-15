@@ -553,7 +553,11 @@ impl Project {
     pub fn save_feature(&self, f: &Feature) -> anyhow::Result<()> {
         // The proved invariant (proofs/EgmGate.lean) must hold for anything we persist.
         anyhow::ensure!(f.gate.invariant(), "internal error: gate invariant broken for `{}`: {:?}", f.slug, f.gate);
+        let new = !self.feature_path(&f.slug).exists();
         std::fs::write(self.feature_path(&f.slug), serde_json::to_string_pretty(f)? + "\n")?;
+        if new {
+            crate::events::emit("feature.created", &f.slug, serde_json::json!({"doc": f.doc, "doc_hash": f.gate.doc_hash.to_string(), "depends_on": f.depends_on}));
+        }
         Ok(())
     }
 
@@ -578,7 +582,11 @@ impl Project {
     /// Fold any edit made to the doc since egm last looked into the gate.
     pub fn sync(&self, f: &mut Feature) -> anyhow::Result<Doc> {
         let doc = self.doc(f)?;
+        let before = f.gate;
         f.gate = f.gate.step(Event::EditDoc(doc.hash())).expect("EditDoc is never refused");
+        if f.gate != before {
+            crate::events::gate_event(&f.slug, Event::EditDoc(doc.hash()), &f.gate);
+        }
         Ok(doc)
     }
 

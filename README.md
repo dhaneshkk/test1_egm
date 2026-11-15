@@ -558,7 +558,7 @@ The adoption rule (`proofs/EgmTune.lean`) requires all four:
 
 Adoption copies the setup into `.egm-dsh/setups/<fingerprint>/` and sets `goldfish_harness`. Delete that config line to roll back. Each review records the fingerprint of the setup it used.
 
-**What a setup cannot reach.** egm-dsh loads it through `src/tuning.rs`, which accepts only prompt text: the four guidance files and the four stage personas, each at most 8,000 characters. Any other file, such as a script, plugin, skill or config, refuses the whole setup. The JSON answer schemas, grounding, the verifier, egm-dsh's own alarms, the pass rule, the gate, frozen tests and step limits stay in code. Lean proves applying a setup leaves them unchanged.
+**What a setup cannot reach.** egm-dsh loads it through `crates/egm-core/src/tuning.rs`, which accepts only prompt text: the four guidance files and the four stage personas, each at most 8,000 characters. Any other file, such as a script, plugin, skill or config, refuses the whole setup. The JSON answer schemas, grounding, the verifier, egm-dsh's own alarms, the pass rule, the gate, frozen tests and step limits stay in code. Lean proves applying a setup leaves them unchanged.
 
 ```sh
 pip install -e path/to/harness2              # Python 3.12+
@@ -873,6 +873,32 @@ Lean: `namespace EgmEvidence` (`gate_passes_iff`, `one_failing_check_fails`, `no
 
 **What this doesn't do yet.** The live `gh` fetch in `review_metrics.py` is untested here, because the workspace's GitHub token was rejected; the arithmetic is checked on fixtures. Mutation operators are text-level and language-agnostic, so they miss language-specific bugs and can produce equivalent mutants that no test could catch. Keep the minimum below 100%. Routing and tiering are suggestions; who reviews is the team's decision.
 
+## A library for egm-team: events and the audit log
+
+egm-dsh is now a Cargo workspace, the first step of the team web app (egm-team):
+
+| Crate | What it is |
+|---|---|
+| `crates/egm-core` | Everything egm-dsh does, as a library. Everything it says goes through one event sink (`events.rs`): terminal lines, and domain events for each change (`feature.created`, `doc.revised`, `goldfish.verdict`, `decision.recorded`, `criteria.frozen`, `build.completed`, `review.completed`, `gate.verdict`). Domain events carry hashes, counts and verdicts, never source code or document text. `policy.rs` says who may do what in egm-team |
+| `egm-dsh` (the root package) | The CLI, now a thin layer over `egm-core`. Output is byte for byte what it was |
+| `crates/egm-audit` | The `AuditLog` trait and its Vesdb client, replay of a feature's gate from its events, and the `egm-audit` command |
+
+**Events from the CLI.** `--events FILE` (any command) also appends every event to `FILE` as JSON lines; the terminal output does not change. egm-team's worker reads the same events in-process through the sink.
+
+```sh
+egm-dsh --events events.jsonl fix gap-ids "..." --files jot/cli.py --check tests/test_jot.py::GapTest::test_add_after_gap
+egm-audit replay events.jsonl                     # gap-ids  hardened  <doc hash>: the gate egm-dsh saved
+VESDB_URL=http://vesdb-a:3000,http://vesdb-b:3000 VESDB_TOKEN=... \
+  egm-audit push events.jsonl --project jot --job build-17   # one Vesdb event each, under /egm/jot/gap-ids
+egm-audit replay-vesdb --project jot              # the same phase, rebuilt from Vesdb alone
+egm-audit receipt 0                               # signed receipt and inclusion proof
+egm-audit bundle 0 1 2                            # offline evidence bundle; check it with vesdb-verify
+```
+
+**Vesdb.** The audit log is [Vesdb](https://github.com/dhaneshkk/test1_vesdb), run highly available as merged on its master: two servers on one bucket, one writer and one warm standby. `egm-audit` sends an `Idempotency-Key` with every write (`egm/<job>/<n>`) and retries a `503` or a dropped connection with the same key, moving to the next URL when several are given, so a failover neither loses nor duplicates an event. Events are stored as `io.egm.<kind>` under the subject `/egm/<project>/<feature>`, with the actor beside the data.
+
+**Who may do what** (`policy.rs`, mirrored by `proofs/EgmPolicy.lean`): developers start features and run jobs; reviewers and approvers review, label alarms and approve merges; only an approver approves a high-risk merge; admins change members and settings; auditors read and export; the worker records what a job did. Nobody reviews or approves a feature they wrote, and taking a role away never grants an action.
+
 ## How egm-dsh drives DeepSeek Harness
 
 egm launches the headless profile once per turn and reads its JSON event stream:
@@ -932,11 +958,14 @@ The default launcher is `npx -y @deepseek-ai/dsh@latest`; set `"dsh_command"` in
 | Budgets never go negative: activities charged plus budget left equals the starting budget, exactly, for every run and every counter (and the same for model calls) | `budget_accounting`, `activities_within_budget`, `sessions_within_budget`, `rstep_budget` (natural numbers, and a step needing a zero counter is refused) |
 | The Rust run layer matches the Lean model | `cargo test` (`run`): all 17,057,656 run traces of length 6 (18,186,225 steps) keep the invariant, drop the rank and account exactly, and the gate moves only through the gate's own step; full reachability from three budgets (5,212 states) terminates within the initial rank with no live session in any stuck state; rank drop is also asserted at runtime on every begin, open and finish |
 | No orphaned dsh process on Ctrl-C, SIGTERM or a SIGKILL of egm; a crashed run's sessions are cleaned up by the next command; over-budget steps are refused with the fix named | `tests/e2e/run_sessions_e2e.py`: real dsh, real signals, a stalling fake model, process groups checked through `/proc` |
+| Replaying a feature's audit events gives exactly the gate egm-dsh kept, for every start and every trace; nothing egm-dsh emits is a transition the gate refuses; a replayed gate is safe | `proofs/EgmGate.lean`, `namespace EgmReplay`: `replay_emitted`, `emitted_never_refused`, `replay_safe`; `cargo test` (`egm-audit` replay through the events egm-core really emits); `run_audit_e2e.py` (real dsh, real Vesdb: replay from the events file and from Vesdb equals the saved gate) |
+| An author never reviews or approves their own feature; only an approver approves a high-risk merge; the worker never reviews, approves or changes roles; adding a role never takes an action away | `proofs/EgmPolicy.lean`: `author_never_approves`, `high_risk_needs_approver`, `worker_limited`, `monotone`; `cargo test` (`policy`: the same four facts over all 4,224 cases) |
+| An auditor's export of a feature holds exactly the events the app replays for it; a feature's history only grows at the end; a retried write under one idempotency key is recorded once | `proofs/VesdbLink.lean`: `export_exact`, `history_prefix`, `retry_once` (Vesdb's own `receipt_binding`, `no_fork`, `ack_durable`, `idempotent` are proved in its repository); `run_audit_e2e.py`: pushing twice writes nothing new, a killed writer loses and doubles nothing, `vesdb-verify` fails a bucket with one changed byte |
 | The Rust gate matches the Lean model | `cargo test`: all 117,649 event traces up to length 6; the invariant is also asserted on every save |
 | egm works with real DeepSeek Harness | `python3 tests/e2e/run_dsh_e2e.py target/release/egm-dsh --preset P dsh` runs the real `dsh` binary against a scripted fake model endpoint and checks: session resume, read-only enforcement, write access only for build, the gate, and a hardened result |
 
 ```sh
-cargo test
+cargo test --workspace
 for f in proofs/*.lean; do lean "$f"; done
 for p in balanced economy quality; do python3 tests/e2e/run_dsh_e2e.py target/release/egm-dsh --preset $p "$(which dsh)"; done
 python3 tests/e2e/run_sessions_e2e.py "$PWD/target/release/egm-dsh" "$(which dsh)"
@@ -944,6 +973,7 @@ python3 tests/e2e/run_escalate_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_room_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_loop_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_provider_e2e.py target/release/egm-dsh "$(which dsh)"
+python3 tests/e2e/run_audit_e2e.py target/release/egm-dsh target/release/egm-audit "$VESDB/target/release/vesdb" "$VESDB/target/release/vesdb-verify" "$(which dsh)"   # VESDB: a build of dhaneshkk/test1_vesdb
 ```
 
 ## Measuring whether the goldfish helps

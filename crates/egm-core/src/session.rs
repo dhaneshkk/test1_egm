@@ -358,6 +358,11 @@ impl Activity {
         let next = a.state.step(RunEvent::Finish(o)).map_err(|r| anyhow::anyhow!("internal: {r}"))?;
         assert!(next.invariant() && next.rank() < a.state.rank(), "finish must keep the gate invariant and drop the rank");
         let gate = next.gate;
+        if let Some(ev) = o
+            && gate != a.state.gate
+        {
+            crate::events::gate_event(&a.slug, ev, &gate);
+        }
         *active = None;
         self.done = true;
         Ok(gate)

@@ -18,9 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - run: cargo test --release --locked
+      - run: cargo test --workspace --release --locked
 
   lean:
     runs-on: ubuntu-24.04
@@ -52,7 +52,7 @@ jobs:
         run: |
           curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
           echo "LEAN_BIN=$PWD/lean-4.31.0-linux/bin/lean" >> "$GITHUB_ENV"
-      - run: cargo build --release --locked
+      - run: cargo build --workspace --release --locked
       - name: End-to-end tests (real dsh, scripted model)
         run: |
           set -e
@@ -75,6 +75,9 @@ jobs:
           python3 tests/e2e/run_vote_e2e.py $E $D
           pip install --break-system-packages -q coverage || true   # coverage of changed lines (optional)
           python3 tests/e2e/run_gate_e2e.py $E $D
+          git clone -q --depth 1 https://github.com/dhaneshkk/test1_vesdb /tmp/vesdb   # audit log: egm-team's Vesdb, two servers on one bucket
+          cargo build --release -q --manifest-path /tmp/vesdb/Cargo.toml -p vesdb-server -p vesdb-verify
+          python3 tests/e2e/run_audit_e2e.py $E target/release/egm-audit /tmp/vesdb/target/release/vesdb /tmp/vesdb/target/release/vesdb-verify $D
           python3 bench/review_metrics.py --selftest
           python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
           python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2

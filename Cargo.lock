@@ -332,7 +332,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "egm-dsh"
+name = "egm-audit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "egm-core",
+ "serde",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "egm-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -343,6 +355,16 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "egm-dsh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "egm-core",
+ "serde_json",
 ]
 
 [[package]]
