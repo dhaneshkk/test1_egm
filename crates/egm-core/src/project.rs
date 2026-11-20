@@ -536,6 +536,17 @@ impl Project {
         });
         let mut f = std::fs::OpenOptions::new().create(true).append(true).open(Self::egm_dir(&self.root).join("usage.jsonl"))?;
         writeln!(f, "{line}")?;
+        // the team app counts tokens and cost per feature and per project from this event
+        let cost = crate::cost::lookup(&self.config.prices, model).map(|p| crate::cost::dollars(p, usage));
+        crate::events::emit(
+            "usage.recorded",
+            feature,
+            serde_json::json!({
+                "role": role, "agent": agent, "model": model, "cache_hit": usage.cache_hit, "cache_miss": usage.cache_miss,
+                "output": usage.output, "requests": usage.requests, "estimated": usage.estimated,
+                "tokens": usage.cache_hit + usage.cache_miss + usage.output, "cost_usd": cost,
+            }),
+        );
         Ok(())
     }
 

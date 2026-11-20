@@ -35,3 +35,4 @@ pub mod vcs;
 pub mod ui;
 pub mod events;
 pub mod policy;
+pub mod queue;

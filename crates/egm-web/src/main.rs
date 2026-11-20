@@ -1,6 +1,7 @@
 //! `egm-team`: the egm-team web server.
 //!
 //!   egm-team serve   --config egm-team.toml     serve the app and keep the views current
+//!   egm-team worker  --config egm-team.toml     run only the worker (needs [worker])
 //!   egm-team rebuild --config egm-team.toml     drop the views and rebuild them from Vesdb
 //!   egm-team grant   --config egm-team.toml --project P --user github:123 --roles developer,reviewer
 //!                                               set someone's roles (recorded in Vesdb;
@@ -25,6 +26,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     Serve,
+    Worker,
     Rebuild,
     Grant {
         #[arg(long)]
@@ -60,8 +62,18 @@ async fn main() -> anyhow::Result<()> {
                 let mail_db = Arc::new(db::connect(&cfg.database_url).await?);
                 tokio::spawn(egm_web::mail::sender(m, cfg.public_url.clone(), mail_db));
             }
-            let state = App { cfg, db: client, log, refresh: wake };
+            let work = Arc::new(tokio::sync::Notify::new());
+            if cfg.worker.is_some() {
+                tokio::spawn(egm_web::worker::run(cfg.clone(), log.clone(), work.clone()));
+                eprintln!("egm-team: the worker runs in this process");
+            }
+            let state = App { cfg, db: client, log, refresh: wake, work };
             topcoat::serve(listener, app::router(state)).await?;
+        }
+        Cmd::Worker => {
+            anyhow::ensure!(cfg.worker.is_some(), "add a [worker] section to {}", cli.config.display());
+            eprintln!("egm-team: worker started");
+            egm_web::worker::run(cfg.clone(), vesdb(&cfg), Arc::new(tokio::sync::Notify::new())).await;
         }
         Cmd::Rebuild => {
             let mut client = db::connect(&cfg.database_url).await?;

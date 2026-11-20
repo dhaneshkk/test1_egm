@@ -44,6 +44,9 @@ pub struct Config {
     pub gitlab: Option<OAuthApp>,
     /// Mail notifications (review requests, reviews, approvals, comments). Off when absent.
     pub mail: Option<MailConfig>,
+    /// The worker that runs egm-dsh jobs. `serve` runs it in the same process when this is
+    /// present; `egm-team worker` runs it alone.
+    pub worker: Option<WorkerConfig>,
     /// How often the projector reads new events from Vesdb, in milliseconds.
     #[serde(default = "default_refresh")]
     pub refresh_ms: u64,
@@ -58,6 +61,44 @@ pub struct ProjectConfig {
     pub checkout: PathBuf,
     #[serde(default = "default_host")]
     pub host: String,
+    /// Most tokens the project's jobs may use in a calendar month (UTC). A job is refused once
+    /// the month's use has reached it; the job that crosses it is not stopped.
+    pub monthly_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerConfig {
+    /// The egm-dsh binary.
+    #[serde(default = "default_egm_dsh")]
+    pub egm_dsh: PathBuf,
+    /// Environment variables passed to egm-dsh, beyond PATH, HOME, LANG, LC_ALL, TMPDIR and USER
+    /// (for example DEEPSEEK_API_KEY). Nothing else reaches a job: not the Vesdb token, the
+    /// OAuth secrets or the SMTP password.
+    #[serde(default)]
+    pub pass_env: Vec<String>,
+    /// A job still running after this many seconds is stopped.
+    #[serde(default = "default_timeout")]
+    pub timeout_s: u64,
+    /// Jobs running at once across projects (always one per project).
+    #[serde(default = "default_parallel")]
+    pub max_parallel: usize,
+    /// Recorded as the actor of the worker's own events (`worker:<name>`).
+    #[serde(default = "default_worker_name")]
+    pub name: String,
+}
+
+fn default_egm_dsh() -> PathBuf {
+    "egm-dsh".into()
+}
+fn default_timeout() -> u64 {
+    1800
+}
+fn default_parallel() -> usize {
+    2
+}
+fn default_worker_name() -> String {
+    "worker".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +170,13 @@ impl Config {
         for p in &c.projects {
             anyhow::ensure!(valid_name(&p.name) && p.name != crate::SYSTEM, "project name `{}`: use letters, digits, `-` and `_`", p.name);
             anyhow::ensure!(p.host == "github" || p.host == "gitlab", "project `{}`: host must be github or gitlab", p.name);
+        }
+        if let Some(w) = &c.worker {
+            for v in &w.pass_env {
+                anyhow::ensure!(!v.starts_with("EGM_"), "[worker] pass_env: `{v}` is one of egm-team's own secrets and never reaches a job");
+            }
+            anyhow::ensure!(w.max_parallel >= 1 && w.timeout_s >= 1, "[worker] max_parallel and timeout_s must be at least 1");
+            anyhow::ensure!(valid_name(&w.name), "[worker] name: use letters, digits, `-` and `_`");
         }
         c.public_url = c.public_url.trim_end_matches('/').to_string();
         Ok(c)

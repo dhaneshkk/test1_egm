@@ -14,7 +14,8 @@ egm-core = { path = "../egm-core", default-features = false }
 egm-audit = { path = "../egm-audit" }
 # Experimental; pinned exactly, and all of its use stays in this crate.
 topcoat = { version = "=0.12.1", features = ["anyhow"] }
-tokio = { version = "1.51", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio = { version = "1.51", features = ["rt-multi-thread", "macros", "net", "sync", "time", "process"] }
+libc = "0.2"
 tokio-postgres = { version = "0.7.18", features = ["with-serde_json-1"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
