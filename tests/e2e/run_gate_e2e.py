@@ -21,6 +21,11 @@ built by egm-dsh with your failing test, committed on its own branch.
         count as caught, so the gate passed at 100% with nothing judged. Now the gate
         times the unmutated checks first and fails, naming the fix; with the timeout
         raised it passes again, every catch a real test failure
+  C. criteria with a risk tier and a scope (`fix --risk`), the same weak test, and the
+     mutation minimum at 0 so only the per-criterion rule decides:
+     5. high risk: the seeded bugs survive in the criterion's scope, so the gate fails
+        on "high-risk criteria pin their code", naming [FIX]
+     6. medium risk: the gate passes; the survivors raise the tier and name [FIX]
 
 usage: python3 run_gate_e2e.py EGM_BINARY DSH_COMMAND...
 """
@@ -59,17 +64,24 @@ def project(name, test):
     return p
 
 
-def main():
-    have_cov = subprocess.run([sys.executable, "-m", "coverage", "--version"], capture_output=True).returncode == 0
-    a = project("gate-good", fx.GAP_TEST)
-    w = project("gate-weak", WEAK_TEST)
-    # the weak project has no other test of ids: drop the sample's one and commit
+def weak_project(name):
+    """A project whose only id test is the weak one: the sample's id test is dropped."""
+    w = project(name, WEAK_TEST)
     t = w.proj / "tests" / "test_jot.py"
     src = t.read_text()
     start = src.index("    def test_add_assigns_increasing_ids")
     end = src.index("    def test_save_and_load_round_trip")
     t.write_text(src[:start] + src[end:])
     w.git("commit", "-qam", "no id test")
+    return w
+
+
+def main():
+    have_cov = subprocess.run([sys.executable, "-m", "coverage", "--version"], capture_output=True).returncode == 0
+    a = project("gate-good", fx.GAP_TEST)
+    w = weak_project("gate-weak")
+    wh = weak_project("gate-weak-high")
+    wm = weak_project("gate-weak-medium")
     out = {}
     try:
         out["fix"] = a.egm("fix", "gap-ids", fx.PROBLEM, "--files", "jot/cli.py", "--check", fx.CHECK)
@@ -118,9 +130,20 @@ def main():
         out["b4-ok"] = a.egm("gate", "gap-ids")
         raised = json.loads((a.proj / ".egm-dsh" / "evidence" / "gap-ids.json").read_text())
         cfg_path.write_text(cfg_text)
+        # C5/C6: the weak test under a high- and a medium-risk criterion
+        for proj, risk in ((wh, "high"), (wm, "medium")):
+            out[f"{risk}-fix"] = proj.egm("fix", "gap-ids", fx.PROBLEM, "--files", "jot/cli.py", "--check", fx.CHECK, "--risk", risk)
+            proj.egm("set-gate", "--mutation-min", "0")
+            out[f"{risk}-gate"] = proj.egm("gate", "gap-ids")
+            pr = proj.work / "PR.md"
+            proj.egm("evidence", "gap-ids", "--out", str(pr))
+            out[f"{risk}-bundle"] = pr.read_text() if pr.exists() else ""
+            out[f"{risk}-rec"] = json.loads((proj.proj / ".egm-dsh" / "evidence" / "gap-ids.json").read_text())
     finally:
         a.close()
         w.close()
+        wh.close()
+        wm.close()
 
     def failed(key, name):
         rc, text, _ = out[key]
@@ -162,6 +185,17 @@ def main():
             and (raised.get("mutation") or {}).get("timed_out", 1) == 0
             and (raised.get("mutation") or {}).get("killed", 0) == (raised.get("mutation") or {}).get("tried", -1) >= 3
             and (raised.get("mutation") or {}).get("baseline_secs", 0) >= 3,
+        "C5: the high-risk fix is built, and its doc carries [FIX], the tier and the scope": wh.feature("gap-ids")["gate"]["phase"] in ("built", "hardened")
+            and "[FIX]" in (wh.proj / "docs" / "fixes" / "gap-ids.md").read_text() and "Risk: high Scope: `jot/cli.py`" in (wh.proj / "docs" / "fixes" / "gap-ids.md").read_text(),
+        "C5: survivors in a high-risk scope fail the gate on the criteria check, naming FIX": failed("high-gate", "high-risk criteria pin their code")
+            and "FIX (" in out["high-gate"][1] and "blocks" in out["high-gate"][1]
+            and next(c for c in out["high-rec"]["checks"] if c["name"] == "seeded bugs caught (mutation score)")["ok"],
+        "C5: the bundle's per-criterion table marks FIX as blocking": "### Per criterion" in out["high-bundle"] and "| FIX | high (blocks) |" in out["high-bundle"],
+        "C6: survivors in a medium-risk scope do not block: the gate passes": out["medium-gate"][0] == 0
+            and "high-risk criteria pin their code" not in {c["name"] for c in out["medium-rec"]["checks"]},
+        "C6: they raise the tier and name the criterion": out["medium-rec"]["tier"] in ("medium", "high")
+            and any("criterion FIX (medium risk)" in r and "survived in its scope" in r for r in out["medium-rec"]["risk_reasons"])
+            and "| FIX | medium |" in out["medium-bundle"],
     }
     for name, ok in checks.items():
         print(("PASS " if ok else "FAIL ") + name)
@@ -170,7 +204,7 @@ def main():
                                    "coverage_measured": have_cov}))
     if not all(checks.values()):
         sys.exit(1)
-    for p in (a, w):
+    for p in (a, w, wh, wm):
         shutil.rmtree(p.work, ignore_errors=True)
 
 
