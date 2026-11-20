@@ -81,8 +81,13 @@ pub fn eligible(files: &[String], limits: &FixLimits) -> Vec<String> {
 
 /// The short design doc. Every section egm-dsh expects is there, so egm-dsh's own
 /// checks pass on it; the goldfish still has to understand it.
-pub fn doc_text(title: &str, problem: &str, files: &[String], check: &str, limits: &FixLimits) -> String {
+pub fn doc_text(title: &str, problem: &str, files: &[String], check: &str, risk: Option<crate::criteria::Risk>, limits: &FixLimits) -> String {
     let map: Vec<String> = files.iter().map(|f| format!("- `{f}` — the fix")).collect();
+    // with a risk tier, the one criterion gets an ID and is scoped to the fix's files
+    let (id, meta) = match risk {
+        None => (String::new(), String::new()),
+        Some(r) => ("[FIX] ".to_string(), format!(" Risk: {} Scope: {}", r.as_str(), files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", "))),
+    };
     format!(
         "# Fix: {title}\n\n\
 ## Problem\n\n{problem}\n\n\
@@ -93,7 +98,7 @@ Keep every existing caller and saved data working.\n\n\
 egm-dsh moves it to the full lane if the change turns out bigger.\n\n\
 ## Risks and mitigations\n\n**A fix that breaks something else.** The whole test suite runs after the change, and a fresh reviewer reads the diff.\n\n\
 ## Implementation map\n\n{}\n\n\
-## Acceptance criteria\n\n- The problem above no longer happens. Check: {check}\n",
+## Acceptance criteria\n\n- {id}The problem above no longer happens. Check: {check}{meta}\n",
         limits.max_files,
         limits.max_lines,
         map.join("\n")
@@ -190,7 +195,7 @@ mod tests {
 
     #[test]
     fn the_short_doc_passes_egm_dsh_checks() {
-        let t = doc_text("tag case", "list --tag Work misses notes tagged work.", &["jot/cli.py".into()], "`tests/test_jot.py::T::test_case`", &FixLimits::default());
+        let t = doc_text("tag case", "list --tag Work misses notes tagged work.", &["jot/cli.py".into()], "`tests/test_jot.py::T::test_case`", None, &FixLimits::default());
         let d = crate::doc::Doc { path: "x.md".into(), text: t };
         assert!(d.missing_sections().is_empty(), "{:?}", d.missing_sections());
         assert_eq!(d.implementation_map(), vec!["jot/cli.py"]);
@@ -199,5 +204,14 @@ mod tests {
         assert_eq!(check_text(Some("t.py::x"), None).as_deref(), Some("`t.py::x`"));
         assert_eq!(check_text(None, Some("run jot list")).as_deref(), Some("manual — run jot list"));
         assert_eq!(check_text(None, None), None);
+        // with a risk tier: an ID, the tier, and the fix's files as the scope; still no egm-dsh question
+        let files = vec!["jot/cli.py".to_string(), "jot/store.py".to_string()];
+        let t = doc_text("ids", "ids repeat.", &files, "`tests/test_jot.py::T::test_ids`", Some(crate::criteria::Risk::High), &FixLimits::default());
+        let d = crate::doc::Doc { path: "x.md".into(), text: t };
+        let c = d.criteria();
+        assert_eq!(c[0].check.as_deref(), Some("tests/test_jot.py::T::test_ids"));
+        let m = crate::criteria::parse_meta(&c[0].text);
+        assert_eq!((m.id.as_deref(), m.risk, m.scope.len()), (Some("FIX"), Some(crate::criteria::Risk::High), 2));
+        assert!(crate::criteria::problems(&c, &d.implementation_map()).is_empty());
     }
 }

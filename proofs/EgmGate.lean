@@ -1478,6 +1478,45 @@ example : judgedOk 0 0 30 60 = false := by decide
 example : judgedOk 6 2 2 60 = true := by decide
 example : judgedOk 4 4 7 60 = false := by decide
 
+/-- An acceptance criterion's risk tier (`Risk:` in the doc; `none` when not given). -/
+inductive Risk where
+  | low
+  | medium
+  | high
+  deriving DecidableEq, Repr
+
+/-- `blocks`: a criterion blocks the gate only when it is high risk and a seeded bug
+survived in its scope. Mirrors `criteria::blocks` (`blocking_rule_matches_lean`). -/
+def blocks (r : Option Risk) (survivors : Nat) : Bool := decide (r = some Risk.high) && decide (0 < survivors)
+
+/-- `criteria_ok`: no criterion blocks. Each entry is a criterion's tier and its survivors. -/
+def criteriaOk (cs : List (Option Risk × Nat)) : Bool := cs.all (fun c => !blocks c.1 c.2)
+
+theorem medium_never_blocks (n : Nat) : blocks (some Risk.medium) n = false := by simp [blocks]
+theorem low_never_blocks (n : Nat) : blocks (some Risk.low) n = false := by simp [blocks]
+theorem untiered_never_blocks (n : Nat) : blocks none n = false := by simp [blocks]
+theorem nothing_survived_never_blocks (r : Option Risk) : blocks r 0 = false := by simp [blocks]
+
+/-- One seeded bug surviving in a high-risk scope fails the criteria check. -/
+theorem high_survivor_fails (cs : List (Option Risk × Nat)) (n : Nat) (h : 0 < n) :
+    criteriaOk ((some Risk.high, n) :: cs) = false := by
+  simp [criteriaOk, blocks, h]
+
+/-- Survivors in a medium- or low-risk scope never turn a passing criteria check into a failing one. -/
+theorem lower_tier_survivors_keep_ok (cs : List (Option Risk × Nat)) (r : Risk) (n : Nat) (hr : r ≠ Risk.high)
+    (h : criteriaOk cs = true) : criteriaOk ((some r, n) :: cs) = true := by
+  simp [criteriaOk, blocks, hr] at *
+  exact h
+
+/-- With the criteria check among the gate's checks, the gate passes only if no criterion blocks. -/
+theorem gate_needs_criteria (checks : List Bool) (cs : List (Option Risk × Nat))
+    (h : gatePasses (criteriaOk cs :: checks) = true) : criteriaOk cs = true :=
+  ((gate_passes_iff _).mp h).2 _ (List.mem_cons_self ..)
+
+example : criteriaOk [(some Risk.medium, 3), (some Risk.low, 1), (none, 2)] = true := by decide
+example : criteriaOk [(some Risk.medium, 3), (some Risk.high, 1)] = false := by decide
+example : criteriaOk [(some Risk.high, 0)] = true := by decide
+
 /-- Tiers 0 (low) < 1 (medium) < 2 (high); the tier is the highest signal raised. -/
 def tier (signals : List Nat) : Nat := signals.foldl max 0
 

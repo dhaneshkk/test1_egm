@@ -471,7 +471,33 @@ pub fn precheck(doc: &Doc, limits: crate::steps::StepLimits, verification: &[cra
     let mut alarms = collect_alarms(&missing_sections, &unchecked, StageAnswers::default(), &crate::steps::size_alarms(doc, limits));
     push_checklist(&mut alarms, doc, verification);
     push_diagrams(&mut alarms, doc, diagrams);
+    push_criteria(&mut alarms, doc);
     (missing_sections, unchecked, alarms)
+}
+
+/// The criteria's ID, risk and scope, when given, checked for form: egm-dsh's own questions.
+fn push_criteria(alarms: &mut Vec<Alarm>, doc: &Doc) {
+    for text in crate::criteria::problems(&doc.criteria(), &doc.implementation_map()) {
+        let id = alarms.len() + 1;
+        alarms.push(Alarm {
+            id,
+            source: Source::Egm,
+            kind: Kind::Question,
+            text,
+            section: "Acceptance criteria".into(),
+            quote: String::new(),
+            search_terms: vec![],
+            grounding: Grounding::NotApplicable,
+            status: Status::Open,
+            dropped_by: None,
+            reason: None,
+            features: None,
+            triage: None,
+            skip_verify: false,
+            caught_by: None,
+            vote: None,
+        });
+    }
 }
 
 /// Malformed diagrams (and, with `require`, a plan without one): egm-dsh's own questions.
