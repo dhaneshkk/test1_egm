@@ -1,7 +1,8 @@
 //! egm-team: the web app over egm-dsh, so developers and reviewers work on features together.
 //!
 //! Phase 2 is the read-only team view; phase 3 adds collaboration ([`collab`]): alarm labels,
-//! comments, reviews, merge approval with separation of duties, and mail ([`mail`]). The app reads two things: Postgres views rebuilt from
+//! comments, reviews, merge approval with separation of duties, and mail ([`mail`]); phase 4
+//! runs egm-dsh from the browser ([`jobs`]) through a worker with a durable queue ([`worker`]). The app reads two things: Postgres views rebuilt from
 //! the Vesdb audit log ([`db`]), and the project checkout egm-dsh works in ([`checkout`]).
 //! People sign in with GitHub or GitLab ([`oauth`]); every page checks the policy first
 //! ([`authz`]).
@@ -12,8 +13,10 @@ pub mod checkout;
 pub mod collab;
 pub mod config;
 pub mod db;
+pub mod jobs;
 pub mod mail;
 pub mod oauth;
+pub mod worker;
 
 use std::sync::Arc;
 
@@ -37,6 +40,8 @@ pub struct App {
     pub log: Arc<dyn egm_audit::AuditLog>,
     /// Wake the projector now (after a sign-in, so the new user's name shows at once).
     pub refresh: Arc<tokio::sync::Notify>,
+    /// Wake the worker now (after someone queues a job), when it runs in this process.
+    pub work: Arc<tokio::sync::Notify>,
 }
 
 /// Keep the views current: read new events from Vesdb every `refresh_ms`, or when woken.

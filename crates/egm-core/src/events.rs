@@ -56,6 +56,7 @@ pub const TYPES: &[&str] = &[
     "build.completed",
     "review.completed",
     "gate.verdict",
+    "usage.recorded",
 ];
 
 /// The domain event for a gate transition, with the phase it led to. Emitted only when the

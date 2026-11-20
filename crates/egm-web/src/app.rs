@@ -9,6 +9,7 @@
 use crate::authz::{self, app};
 use crate::oauth::{self, Pending, Provider};
 use crate::collab::collab_panel;
+use crate::jobs::{new_feature_form, run_panel};
 use crate::{checkout, db, Ah, SYSTEM};
 use egm_audit::AuditEvent;
 use egm_core::policy::Action;
@@ -38,6 +39,12 @@ pub fn router(state: crate::App) -> Router {
         .page(audit_trail)
         .route(health)
         .page(crate::collab::inbox)
+        .page(crate::jobs::job_page)
+        .page(crate::jobs::jobs_page)
+        .route(crate::jobs::new_feature)
+        .route(crate::jobs::run)
+        .route(crate::jobs::job_log)
+        .route(crate::jobs::job_js)
         .route(crate::collab::label)
         .route(crate::collab::comment)
         .route(crate::collab::review)
@@ -125,10 +132,11 @@ async fn phase_badge(cx: &Cx, p: &str) -> Result<impl View> {
 }
 
 #[component]
-async fn tabs(cx: &Cx, project: &str) -> Result<impl View> {
+pub async fn tabs(cx: &Cx, project: &str) -> Result<impl View> {
     Ok(view! {
         <nav class="tabs">
             <a href=(format!("/p/{project}"))>"Features"</a>
+            <a href=(format!("/p/{project}/jobs"))>"Jobs"</a>
             <a href=(format!("/p/{project}/metrics"))>"Metrics"</a>
             <a href=(format!("/p/{project}/members"))>"Members"</a>
             <a href=(format!("/p/{project}/audit"))>"Audit trail"</a>
@@ -290,6 +298,7 @@ async fn board(cx: &Cx) -> Result<impl View> {
     Ok(view! {
         <h1>(p)</h1>
         tabs(project: p)
+        new_feature_form(p: p)
         <div id="board" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
             for col in columns {
                 <section data-column=(col)>
@@ -355,6 +364,8 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
         phase_badge(p: &f.phase)
         if let Some(e) = &f.replay_error { <p class="bad" id="replay-error">(e)</p> }
         <p class="muted">"Doc: "(&f.doc)" · doc hash "(&f.doc_hash)</p>
+
+        run_panel(p: p, slug: slug)
 
         <h2>"Design doc"</h2>
         match &doc {
@@ -467,6 +478,10 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
         None => "undefined".to_string(),
     };
     let minutes = db::minutes(&*app(cx).db, p).await.ah()?;
+    let usage = db::project_usage(&*app(cx).db, p).await.ah()?;
+    let month = db::month_tokens(&*app(cx).db, p).await.ah()?;
+    let ceiling = app(cx).cfg.project(p).and_then(|c| c.monthly_tokens);
+    let estimated = usage.iter().any(|u| u.3);
     Ok(view! {
         <h1>(p)" · metrics"</h1>
         tabs(project: p)
@@ -502,6 +517,15 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
                 <tr><th>"Feature"</th><th>"Minutes"</th><th>"People"</th></tr>
                 for (f, m, n) in &minutes { <tr><td>(f)</td><td>(format!("{m:.1}"))</td><td>(*n)</td></tr> }
             </table>
+        }
+        <h2>"Cost"</h2>
+        <p id="month-tokens">(match ceiling { Some(c) => format!("Tokens this month: {month} of the {c} ceiling."), None => format!("Tokens this month: {month} (no ceiling).") })</p>
+        if usage.is_empty() { <p class="muted" id="cost-by-feature">"No model calls recorded yet."</p> } else {
+            <table id="cost-by-feature">
+                <tr><th>"Feature"</th><th>"Tokens"</th><th>"Cost"</th></tr>
+                for (f, t, c, _) in &usage { <tr><td>(f)</td><td>(*t)</td><td>(c.map(|c| format!("${c:.4}")).unwrap_or_else(|| "no price".into()))</td></tr> }
+            </table>
+            if estimated { <p class="muted">"Some counts are estimated from text length (the offline mock agent, or a provider that reports no usage)."</p> }
         }
         <h2>"Events"</h2>
         <table id="events">

@@ -48,14 +48,28 @@ CREATE TABLE IF NOT EXISTS activity (
 CREATE TABLE IF NOT EXISTS outbox (
     event_id bigint NOT NULL, to_addr text NOT NULL, subject text NOT NULL, body text NOT NULL,
     sent_at timestamptz, error text, PRIMARY KEY (event_id, to_addr));
+CREATE TABLE IF NOT EXISTS jobs (
+    id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, command text NOT NULL,
+    args jsonb NOT NULL, requester text NOT NULL, state text NOT NULL, status text NOT NULL DEFAULT '',
+    detail text NOT NULL DEFAULT '', exit_code int, tokens bigint NOT NULL DEFAULT 0,
+    queued_at text NOT NULL, started_at text, finished_at text);
+CREATE INDEX IF NOT EXISTS jobs_open ON jobs (state, id);
+CREATE TABLE IF NOT EXISTS job_log (
+    job_id bigint NOT NULL, seq int NOT NULL, speaker text NOT NULL, text text NOT NULL,
+    PRIMARY KEY (job_id, seq));
+CREATE TABLE IF NOT EXISTS usage (
+    id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, role text NOT NULL,
+    model text NOT NULL, tokens bigint NOT NULL, cost double precision, estimated boolean NOT NULL,
+    at text NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash bytea PRIMARY KEY, user_id text NOT NULL, expires_at timestamptz NOT NULL);
 "#;
 
 /// The projected tables, in the order `rebuild` empties them.
 /// Not projected: `sessions`; `activity` (measured minutes, not events); `outbox` (kept across
-/// rebuilds so a rebuild never mails anyone twice).
-const PROJECTED: &[&str] = &["timeline", "comments", "labels", "reviews", "approvals", "features", "members", "users", "egm_meta"];
+/// rebuilds so a rebuild never mails anyone twice); `job_log` (a job's terminal output, which
+/// may quote code, so it is kept in Postgres only, never in the audit log).
+const PROJECTED: &[&str] = &["timeline", "jobs", "usage", "comments", "labels", "reviews", "approvals", "features", "members", "users", "egm_meta"];
 
 pub async fn connect(url: &str) -> anyhow::Result<Client> {
     let (client, conn) = tokio_postgres::connect(url, NoTls).await?;
@@ -137,6 +151,35 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
             )
             .await?;
             notify_author(c, id, project, feature, &w.actor, &format!("{} approved the merge of {feature}", who(c, &w.actor).await?)).await?;
+        }
+        ("job.requested", false) => {
+            c.execute(
+                "INSERT INTO jobs (id, project, feature, command, args, requester, state, queued_at) VALUES ($1,$2,$3,$4,$5,$6,'queued',$7)
+                 ON CONFLICT (id) DO NOTHING",
+                &[&id, &project, &feature, &w.data["command"].as_str().unwrap_or_default(), &w.data["args"], &w.actor, &w.time],
+            )
+            .await?;
+        }
+        ("job.started", false) => {
+            let job = w.data["job"].as_i64().unwrap_or(-1);
+            c.execute("UPDATE jobs SET state='running', started_at=$2 WHERE id=$1 AND state='queued'", &[&job, &w.time]).await?;
+        }
+        ("job.finished", false) => {
+            let job = w.data["job"].as_i64().unwrap_or(-1);
+            let code = w.data["exit_code"].as_i64().map(|c| c as i32);
+            c.execute(
+                "UPDATE jobs SET state='done', status=$2, detail=$3, exit_code=$4, tokens=$5, finished_at=$6 WHERE id=$1",
+                &[&job, &w.data["status"].as_str().unwrap_or_default(), &w.data["detail"].as_str().unwrap_or_default(), &code, &w.data["tokens"].as_i64().unwrap_or(0), &w.time],
+            )
+            .await?;
+        }
+        ("usage.recorded", false) => {
+            c.execute(
+                "INSERT INTO usage (id, project, feature, role, model, tokens, cost, estimated, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING",
+                &[&id, &project, &feature, &w.data["role"].as_str().unwrap_or_default(), &w.data["model"].as_str().unwrap_or_default(),
+                  &w.data["tokens"].as_i64().unwrap_or(0), &w.data["cost_usd"].as_f64(), &w.data["estimated"].as_bool().unwrap_or(false), &w.time],
+            )
+            .await?;
         }
         (kind, false) => {
             if kind == "gate.verdict" && w.data["pass"] == true {
@@ -527,4 +570,113 @@ mod tests {
         assert_eq!(split_subject("/egm/jot/a/b"), None);
         assert_eq!(split_subject("/other/jot"), None);
     }
+}
+
+// ------------------------------------------------------------------------------------- jobs
+
+#[derive(Debug, Clone)]
+pub struct JobRow {
+    pub id: i64,
+    pub project: String,
+    pub feature: String,
+    pub command: String,
+    pub args: Value,
+    pub requester: String,
+    pub state: String,
+    pub status: String,
+    pub detail: String,
+    pub exit_code: Option<i32>,
+    pub tokens: i64,
+    pub queued_at: String,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+}
+
+const JOB_COLS: &str = "id, project, feature, command, args, requester, state, status, detail, exit_code, tokens, queued_at, started_at, finished_at";
+
+fn job_row(r: &tokio_postgres::Row) -> JobRow {
+    JobRow {
+        id: r.get(0),
+        project: r.get(1),
+        feature: r.get(2),
+        command: r.get(3),
+        args: r.get(4),
+        requester: r.get(5),
+        state: r.get(6),
+        status: r.get(7),
+        detail: r.get(8),
+        exit_code: r.get(9),
+        tokens: r.get(10),
+        queued_at: r.get(11),
+        started_at: r.get(12),
+        finished_at: r.get(13),
+    }
+}
+
+/// Queued and running jobs of every project, oldest first: what the worker picks from.
+pub async fn open_jobs(c: &impl GenericClient) -> anyhow::Result<Vec<JobRow>> {
+    let rows = c.query(&format!("SELECT {JOB_COLS} FROM jobs WHERE state IN ('queued','running') ORDER BY id"), &[]).await?;
+    Ok(rows.iter().map(job_row).collect())
+}
+
+pub async fn job(c: &impl GenericClient, id: i64) -> anyhow::Result<Option<JobRow>> {
+    Ok(c.query_opt(&format!("SELECT {JOB_COLS} FROM jobs WHERE id=$1"), &[&id]).await?.as_ref().map(job_row))
+}
+
+/// A project's jobs (or one feature's), newest first.
+pub async fn jobs(c: &impl GenericClient, project: &str, feature: Option<&str>, limit: i64) -> anyhow::Result<Vec<JobRow>> {
+    let rows = match feature {
+        Some(f) => c.query(&format!("SELECT {JOB_COLS} FROM jobs WHERE project=$1 AND feature=$2 ORDER BY id DESC LIMIT $3"), &[&project, &f, &limit]).await?,
+        None => c.query(&format!("SELECT {JOB_COLS} FROM jobs WHERE project=$1 ORDER BY id DESC LIMIT $2"), &[&project, &limit]).await?,
+    };
+    Ok(rows.iter().map(job_row).collect())
+}
+
+/// Lines of a job's output after `after`.
+pub async fn job_log(c: &impl GenericClient, job: i64, after: i32) -> anyhow::Result<Vec<(i32, String, String)>> {
+    let rows = c.query("SELECT seq, speaker, text FROM job_log WHERE job_id=$1 AND seq>$2 ORDER BY seq", &[&job, &after]).await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2))).collect())
+}
+
+pub async fn job_log_append(c: &impl GenericClient, job: i64, seq: i32, speaker: &str, text: &str) -> anyhow::Result<()> {
+    c.execute(
+        "INSERT INTO job_log (job_id, seq, speaker, text) VALUES ($1,$2,$3,$4) ON CONFLICT (job_id, seq) DO NOTHING",
+        &[&job, &seq, &speaker, &text],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Tokens a project used in the current calendar month (UTC), from `usage.recorded` events.
+pub async fn month_tokens(c: &impl GenericClient, project: &str) -> anyhow::Result<i64> {
+    let row = c
+        .query_one(
+            "SELECT COALESCE(SUM(tokens), 0)::bigint FROM usage WHERE project=$1 AND substr(at, 1, 7) = to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM')",
+            &[&project],
+        )
+        .await?;
+    Ok(row.get(0))
+}
+
+/// One feature's tokens and cost by role and model: (role, model, calls, tokens, cost, any estimated).
+pub async fn feature_usage(c: &impl GenericClient, project: &str, feature: &str) -> anyhow::Result<Vec<(String, String, i64, i64, Option<f64>, bool)>> {
+    let rows = c
+        .query(
+            "SELECT role, model, COUNT(*), SUM(tokens)::bigint, SUM(cost), bool_or(estimated) FROM usage WHERE project=$1 AND feature=$2
+             GROUP BY role, model ORDER BY role, model",
+            &[&project, &feature],
+        )
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5))).collect())
+}
+
+/// Every feature's tokens and cost in a project: (feature, tokens, cost, any estimated).
+pub async fn project_usage(c: &impl GenericClient, project: &str) -> anyhow::Result<Vec<(String, i64, Option<f64>, bool)>> {
+    let rows = c
+        .query(
+            "SELECT feature, SUM(tokens)::bigint, SUM(cost), bool_or(estimated) FROM usage WHERE project=$1 GROUP BY feature ORDER BY feature",
+            &[&project],
+        )
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
 }
