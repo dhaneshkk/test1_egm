@@ -155,7 +155,7 @@ egm-dsh set-ceiling 2000000      # refuse a round whose estimate would cross thi
 
 ### 10. Send your work to the team app
 
-Until the web app runs egm-dsh itself (*not yet*, phase 4), record events while you work and push them to the audit log:
+The simplest way is to work in the team app itself (Part 2, "Run egm-dsh from the browser"): every step is then recorded for you. If you run egm-dsh on your own machine instead, record events while you work and push them to the audit log:
 
 ```sh
 egm-dsh --events events.jsonl goldfish rate-limit     # --events works with every command
@@ -179,10 +179,24 @@ Open the address your admin gave you and choose **Sign in with GitHub** or **Sig
 | **Projects** (home) | The projects you belong to, with their feature count |
 | **Features** (`/p/<project>`) | The board: one column per phase, newest change first. A red line on a card means the feature's history in the audit log contains a step the gate refuses; tell your admin |
 | **Feature** (click a card) | The design doc as it is in the checkout; its git revisions (click one to read the doc as it was then); every goldfish review round with its verdict and how many alarms it kept; the evidence gate's checks, risk tier and seeded-bug score; the feature's audit history |
+| **Jobs** (`/p/<project>/jobs`) | Every egm-dsh job run from the app: queued, running, done, failed or refused, with its tokens. Click one to read its output |
 | **Review inbox** (header link) | Features waiting for your review in every project where you review: built, the evidence gate passed for the current doc, not yet approved, not written by you. Highest risk first |
 | **Metrics** | Features by phase, goldfish and evidence-gate verdict counts; the goldfish MCC from reviewers' labels; human minutes per feature, measured from activity in the app |
 | **Members** | Who holds which roles in the project |
 | **Audit trail** | Every recorded event of the project, newest first. Each one is in Vesdb's tamper-evident log and can be verified offline |
+
+### Run egm-dsh from the browser
+
+Developers drive a feature from the app instead of a terminal. Each button queues a **job**. A worker runs egm-dsh in the team's checkout and writes everything to the audit log, with you as the actor. One job runs at a time per project, oldest first. A job page follows the job as it runs and keeps its output afterwards.
+
+1. **Start a feature.** On the board, open **New feature**, give it a name and the idea. The elephant reads the repository and asks its questions.
+2. **Answer in the Design chat** on the feature page. Each answer is a job; the elephant's reply appears in the chat when it is done.
+3. **Draft the design doc.** With nothing ticked the elephant writes the whole doc; tick sections to redraft only those after the goldfish found a gap.
+4. **Goldfish, Build, Review, Gate** run the same steps as the command line, with the same rules. egm-dsh still decides whether a step may run: a build of a doc no goldfish has passed fails in its job, saying why.
+
+**Cost.** Every model call is recorded as `usage.recorded` with its role, model, token counts and price. The feature page shows the feature's tokens and cost by role. The Metrics page shows each feature's total and the project's tokens this month. With the offline mock agent the counts are estimates, and the page says so.
+
+**Monthly ceiling.** An admin can give a project a token ceiling per calendar month (UTC). The worker checks it before each job starts and refuses the job once the month's use has reached the ceiling; the refusal is recorded with the reason. A job is not stopped part-way, so the job that crosses the ceiling finishes.
 
 ### Work together on a feature
 
@@ -211,13 +225,16 @@ Captured by the browser test (`tests/e2e/run_web_e2e.py`) against real egm-dsh o
 | ![Phone board](screenshots/12-board-phone.png) **Board on a phone** | ![Phone feature](screenshots/13-feature-phone.png) **Feature page on a phone** |
 | ![Review inbox](screenshots/14-review-inbox.png) **Review inbox, highest risk first** | ![Alarm labels and comments](screenshots/15-labels-comments.png) **Labelling alarms, comments** |
 | ![Reviews and merge approval](screenshots/16-review-merge.png) **Reviews and the merge panel** | ![Goldfish MCC](screenshots/17-metrics-mcc.png) **Goldfish MCC from labels, human minutes** |
-| ![Author's view](screenshots/18-author-view.png) **The author's view: no review, no approval** | |
+| ![Author's view](screenshots/18-author-view.png) **The author's view: no review, no approval** | ![New feature](screenshots/19-new-feature.png) **Starting a feature from the board** |
+| ![Job running](screenshots/20-job-running.png) **A job page following a running job** | ![Design chat](screenshots/21-design-chat.png) **The design chat with the elephant** |
+| ![Run panel](screenshots/22-run-jobs-cost.png) **Run buttons and the feature's jobs** | ![Jobs](screenshots/23-jobs-queue.png) **The project's job queue** |
+| ![Refused at the ceiling](screenshots/24-ceiling-refused.png) **A job refused at the monthly ceiling** | ![Cost](screenshots/25-metrics-cost.png) **Tokens this month and cost per feature** |
 
 ### What you can do with each role
 
 | Role | Can (today) | Will be able to |
 |---|---|---|
-| developer | read, comment | start features and run egm-dsh jobs (phase 4) |
+| developer | read, comment, start features, run egm-dsh jobs | |
 | reviewer | read, comment, label alarms, review, approve low- and medium-risk merges | |
 | approver | everything a reviewer can, and approve high-risk merges | export evidence |
 | admin | read | change members, roles and project settings in the app, export evidence |
@@ -228,6 +245,9 @@ Nobody can review or approve a feature they wrote, whatever roles they hold.
 ### When something says no
 
 - **403 Forbidden**: you have no role in that project, or your roles do not allow that action (reviewing your own feature, approving a high-risk merge without the approver role). The refusal is recorded in the audit log with your id and the action.
+- **A job says "failed"**: egm-dsh stopped with an error, shown at the end of the job's output (for example a build refused because no goldfish passed the current doc). Fix what it names and run the step again.
+- **A job says "refused"**: it never started. The reason is on the job page: the project reached its monthly token ceiling, or you no longer hold a role that may run it.
+- **A job says "abandoned"**: the worker stopped while it ran (a restart or crash). Its egm-dsh process stopped with it, so nothing changed unrecorded; run the step again.
 - **"cannot approve yet: …"**: the merge panel's reason, such as no approving review by someone else yet, or a gate that passed for an older doc. The attempt is recorded too.
 - **Sign-in failed**: start again from the sign-in page in the same browser tab. Sign-in links expire after ten minutes and work only in the browser that started them.
 - **The page is out of date**: the app reads new events every second or so. A doc change shows once it is pushed to the team's checkout.
@@ -238,10 +258,11 @@ Nobody can review or approve a feature they wrote, whatever roles they hold.
 
 | Part | Role |
 |---|---|
-| `egm-team serve` | The web app. Stateless apart from Postgres, so you can run more than one |
+| `egm-team serve` | The web app. Stateless apart from Postgres, so you can run more than one. With a `[worker]` section it also runs the worker |
+| `egm-team worker` | The worker alone, for running jobs on another machine. It needs the checkouts, egm-dsh and the model key; run one per deployment (a per-project database lock keeps a second one off a busy project) |
 | PostgreSQL | Views of the audit log, plus sessions. Disposable: `egm-team rebuild` recreates every view from Vesdb |
 | Vesdb | The record. Run it highly available as its README describes: two servers on a shared bucket (`--role auto`), at least one witness under a separate account |
-| The project checkout | A git clone egm-team reads docs, reviews and evidence from, read-only. Keep it current (for example `git pull` on a timer) |
+| The project checkout | The git clone egm-dsh works in. The worker owns it: jobs run there, and the app reads docs, reviews and evidence from it. Initialise it once with `egm-dsh init`, and give it a git identity for build commits |
 | GitHub and/or GitLab OAuth apps | Sign-in |
 
 Put egm-team behind TLS (a load balancer or reverse proxy) and set `public_url` to the `https://` address; session and sign-in cookies are then marked Secure.
@@ -277,6 +298,7 @@ refresh_ms   = 1000                                         # how often to read 
 name     = "my-project"            # letters, digits, - and _
 checkout = "/srv/egm/my-project"
 host     = "github"                # or "gitlab"
+monthly_tokens = 20000000          # optional: refuse jobs once the month's use reaches this
 
 [github]
 client_id = "Iv1.abc"
@@ -285,6 +307,12 @@ client_id = "Iv1.abc"
 [gitlab]
 client_id = "abc"
 base_url  = "https://gitlab.com"   # or your own GitLab
+
+[worker]                           # run egm-dsh jobs from the app
+egm_dsh     = "/usr/local/bin/egm-dsh"
+pass_env    = ["DEEPSEEK_API_KEY"] # what a job may see, beyond PATH, HOME, LANG, LC_ALL, TMPDIR, USER
+timeout_s   = 1800                 # a job still running after this is stopped
+max_parallel = 2                   # jobs at once across projects; always one per project
 
 [mail]                             # optional: notifications
 host     = "smtp.example"
@@ -302,6 +330,8 @@ Secrets come from the environment only:
 | `EGM_GITHUB_CLIENT_SECRET` | Needed when `[github]` is configured |
 | `EGM_GITLAB_CLIENT_SECRET` | Needed when `[gitlab]` is configured |
 | `EGM_SMTP_PASSWORD` | Needed when `[mail]` has a `username` |
+
+A job's process starts with an empty environment plus the allowlist above, so none of egm-team's own secrets (`EGM_*`) can reach a build; the configuration refuses an `EGM_` name in `pass_env`.
 
 A user id is the provider and the provider's numeric id, such as `github:1234` or `gitlab:5678`; it stays the same if they rename their account. Find a GitHub id at `https://api.github.com/users/<login>`, a GitLab id on the user's profile page.
 
@@ -330,6 +360,7 @@ A field-test team of four could be two developers, one reviewer and one approver
 |---|---|
 | Rebuild the views (after a restore, or if in doubt) | `egm-team --config egm-team.toml rebuild` |
 | Back up | Vesdb is the record; follow its backup guidance. Postgres needs no backup: every view is rebuilt from Vesdb, and losing it only signs people out and resets the activity minutes. The mail outbox survives `rebuild`, so nobody is mailed twice |
+| See what jobs did | The project's Jobs page; each job keeps its full output. Output lives in Postgres only (it may quote code) and survives `rebuild` |
 | See failed mail | `SELECT to_addr, subject, error FROM outbox WHERE error IS NOT NULL` in Postgres; egm-team's log names each failure |
 | See refusals and sign-ins | The project's Audit trail page, or read `/egm/_system` and `/egm/<project>` from Vesdb |
 | Upgrade | Topcoat is pinned to 0.12.1 and lives only in `crates/egm-web`; upgrade it there and run the browser test (`tests/e2e/run_web_e2e.py`) |
@@ -369,6 +400,9 @@ The phase printed for each feature must match the board. That it always does is 
 | A merge approval needs a built feature, a gate passed for the current doc and an approving review by someone else | `EgmPolicy.merge_never_self`, `merge_needs_gate`, `merge_needs_other_review`, `merge_high_needs_approver`; `policy.rs` checks every combination; `run_web_e2e.py` (the author's attempts and the reviewer's high-risk approval are refused and recorded) |
 | The goldfish MCC counts every reviewer label exactly once, the latest per alarm | `proofs/EgmLabels.lean`: `confusion_total`, `perfect_agreement`, `relabel_moves_one`; `run_web_e2e.py` (MCC on the page equals the MCC of the clicks, before and after a rebuild) |
 | A person with no role in a project can read nothing in it | `EgmPolicy.read_iff_member`; `run_web_e2e.py` (outsider gets 403 on every page, each refusal recorded) |
+| One job at a time per project, oldest first, and none started at or over the monthly token ceiling | `proofs/EgmQueue.lean`: `start_keeps_one_per_project`, `finish_keeps_one_per_project`, `start_is_oldest`, `start_under_ceiling`, `refuse_only_over`; `queue.rs` checks every queue of up to four jobs; `run_jobs_e2e.py` (no two jot jobs overlap in Vesdb; a job at the ceiling is refused) |
+| The state the app shows from jobs is the state the log replays to | `run_jobs_e2e.py`: egm-dsh's own `status`, `egm-audit replay-vesdb` and the app agree on phase and doc hash; after `rebuild` the feature, chat, jobs, cost and history are the same |
+| A job never sees egm-team's secrets | `worker.rs` unit test of the job environment; `run_jobs_e2e.py` reads every job's environment |
 | Every page checks the policy first | `crates/egm-web/tests/policy_lint.rs` fails the build otherwise |
 | No build without a goldfish pass of the current doc | `proofs/EgmGate.lean` |
 | The record cannot be changed unnoticed | Vesdb's Merkle log, witness-signed checkpoints and offline bundles (proved in Vesdb's repository); `run_audit_e2e.py` (one changed byte fails verification) |
@@ -429,6 +463,10 @@ Stored in Vesdb as `io.egm.<type>`.
 | `alarm.labelled` | egm-team | feature | round, alarm, valid or noise, whether the goldfish kept it, doc hash |
 | `review.submitted` | egm-team | feature | approve or changes, note, doc hash |
 | `merge.approved` | egm-team | feature | doc hash, risk tier |
+| `job.requested` | egm-team | feature | command, its arguments (an idea or answer is the person's words, like a comment); the actor is the person |
+| `job.started` | worker | feature | job id, worker name |
+| `job.finished` | worker | feature | job id, status (ok, failed, refused, timeout, abandoned, error), exit code, tokens, reason |
+| `usage.recorded` | egm-dsh | feature | role, agent, model, token counts, price in dollars (none for an unpriced model) |
 
 Comments and review notes are the one place people's words enter the log, because they are the review record. Planned with later phases: `project.settings-changed`, `export.created`.
 
@@ -457,4 +495,6 @@ Comments and review notes are the one place people's words enter the log, becaus
 | A feature card shows a red line | The audit log holds a gate step the gate refuses: written by something other than egm-dsh | Check the feature's audit history; report it |
 | A built feature is not in the review inbox | The gate has not passed for the current doc, the merge is already approved, or you wrote it | Open the feature: the merge panel says which |
 | No mail arrives | `[mail]` is not configured, your provider account shows no public email, or the SMTP server refused it | Ask the admin to check the outbox (Part 3, step 6) |
+| Jobs stay "queued" | No worker runs: add `[worker]` to the configuration, or start `egm-team worker` | The Jobs page says when the server runs no worker |
+| Every job of one project is refused | The project reached `monthly_tokens` this month | Raise it in the configuration, or wait for the next month (UTC) |
 | Everyone is signed out after a restart | Sessions live in Postgres; a new database means new sessions | Sign in again; nothing in the record is lost |

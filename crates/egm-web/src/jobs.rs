@@ -170,11 +170,13 @@ pub async fn job_page(cx: &Cx) -> Result<impl View> {
             <p class="muted" id="job-position">(format!("{position} job(s) of this project run first; one job runs at a time per project."))</p>
         }
         if !j.detail.is_empty() { <p class="bad" id="job-detail">(&j.detail)</p> }
-        <div id="log" data-job=(j.id.to_string()) data-project=(p) data-after=(after.to_string()) data-state=(&j.state)>
-            for (_, speaker, text) in &lines {
-                <div class=(format!("line sp-{speaker}"))><span class="who">(speaker.as_str())</span><span class="text">(text.as_str())</span></div>
-            }
-        </div>
+        if !(lines.is_empty() && j.state == "done") {
+            <div id="log" data-job=(j.id.to_string()) data-project=(p) data-after=(after.to_string()) data-state=(&j.state)>
+                for (_, speaker, text) in &lines {
+                    <div class=(format!("line sp-{speaker}"))><span class="who">(speaker.as_str())</span><span class="text">(text.as_str())</span></div>
+                }
+            </div>
+        }
         if j.state != "done" { <p class="muted">"This page follows the job as it runs."</p> }
         <script src="/static/job.js" defer="defer"></script>
     })

@@ -18,7 +18,7 @@ It is an independent project. Google publishes its own [Elephant-Goldfish Model 
 
 - **Right-sized models** — every role runs on its own model, reasoning effort and tool list. The default `balanced` preset gives the elephant and the builder DeepSeek V4 Pro and gives the goldfish and the reviewer Flash. `egm-dsh usage` shows what each role cost.
 
-- **A team web app** — `egm-team` lets developers, reviewers and approvers follow every feature in the browser: the board, the design doc and its revisions, goldfish reviews, evidence, metrics and the audit trail. People sign in with GitHub or GitLab, every page checks a Lean-proven policy first, and every change is recorded in [Vesdb](https://github.com/dhaneshkk/test1_vesdb), a tamper-evident audit log. Reviewers comment, label goldfish alarms real or noise (which scores the goldfish by MCC), review and approve merges from a risk-sorted inbox; nobody approves their own work, and a high-risk merge needs the approver. Running egm-dsh from the browser comes next.
+- **A team web app** — `egm-team` lets developers, reviewers and approvers follow every feature in the browser: the board, the design doc and its revisions, goldfish reviews, evidence, metrics and the audit trail. People sign in with GitHub or GitLab, every page checks a Lean-proven policy first, and every change is recorded in [Vesdb](https://github.com/dhaneshkk/test1_vesdb), a tamper-evident audit log. Reviewers comment, label goldfish alarms real or noise (which scores the goldfish by MCC), review and approve merges from a risk-sorted inbox; nobody approves their own work, and a high-risk merge needs the approver. Developers run egm-dsh from the browser too: start a feature, answer the elephant in a chat, then draft, goldfish, build, review and gate, each a job a worker runs one at a time per project, with its log streamed, its tokens and cost counted, and a monthly token ceiling.
 
 **New here?** The [user guide](docs/USER_GUIDE.md) walks through each role step by step: developers on the command line, teammates in the web app, the admin who runs it, and the auditor who checks the record. This README explains how it all works.
 
@@ -935,7 +935,7 @@ egm-audit bundle 0 1 2                            # offline evidence bundle; che
 
 ## egm-team: the team web app
 
-`crates/egm-web` builds `egm-team`, a [Topcoat](https://github.com/tokio-rs/topcoat) web app (pinned to 0.12.1; it needs Rust 1.99 or newer). People sign in and see what egm-dsh and the audit log hold, then review together: comments on doc sections and alarms, valid-or-noise labels on goldfish alarms, reviews that approve or request changes, and merge approval with separation of duties. Running egm-dsh from the browser comes next (phase 4).
+`crates/egm-web` builds `egm-team`, a [Topcoat](https://github.com/tokio-rs/topcoat) web app (pinned to 0.12.1; it needs Rust 1.99 or newer). People sign in and see what egm-dsh and the audit log hold, then review together: comments on doc sections and alarms, valid-or-noise labels on goldfish alarms, reviews that approve or request changes, and merge approval with separation of duties. Developers run egm-dsh itself from the browser: each step is a job that a worker runs in the team's checkout.
 
 | Page | Shows |
 |---|---|
@@ -945,6 +945,7 @@ egm-audit bundle 0 1 2                            # offline evidence bundle; che
 | `/p/<project>/f/<feature>/rev/<commit>` | The doc as it was at that commit |
 | `/p/<project>/metrics` | Features by phase, goldfish and gate verdicts, the goldfish MCC from reviewers' labels (warned below 29 per class), human minutes per feature |
 | `/inbox` | Features waiting for your review, highest risk first |
+| `/p/<project>/jobs`, `/p/<project>/jobs/<id>` | The job queue, and one job's output, followed live while it runs |
 | `/p/<project>/members` | Who holds which roles |
 | `/p/<project>/audit` | Every audit event of the project |
 
@@ -960,6 +961,10 @@ More screens in the [user guide](docs/USER_GUIDE.md#screens).
 
 ![Reviews and the merge panel in egm-team](docs/screenshots/16-review-merge.png)
 
+**Running egm-dsh from the browser.** A New feature form on the board, a Design chat with the elephant, and Draft, Goldfish, Build, Review and Gate buttons on the feature page. Each press writes `job.requested` to Vesdb, with the person as actor. The worker (`[worker]` in the configuration, in the same process as `serve` or alone as `egm-team worker`) picks the next job with `egm_core::queue::pick`: one job at a time per project, oldest first, none once the project has reached its `monthly_tokens` for the month. It runs `egm-dsh --events` in the checkout as a separate process with an empty environment plus an allowlist, so egm-team's secrets never reach a build, and the process dies with the worker. While the job runs, the worker streams its terminal lines to the job page and writes its domain events to Vesdb as the person who queued it. egm-dsh still enforces the gate: a build before a goldfish pass fails in its job. Every model call is a `usage.recorded` event, which gives tokens and cost per feature. Jobs that were running when the worker died are finished as `abandoned`, and queued jobs survive a restart because the queue is the projection of the log.
+
+![The design chat and run buttons in egm-team](docs/screenshots/22-run-jobs-cost.png)
+
 **The policy check.** Every page and route starts with `authz::require` (or `authz::signed_in` for the projects list), which applies `policy.rs`. A refusal is a 403 and a `policy.refused` event in Vesdb. `crates/egm-web/tests/policy_lint.rs` reads the source and fails the build if a handler does not start with the check; Topcoat's shards bypass page guards, so the test covers `#[shard]` and `#[procedure]` too.
 
 ```toml
@@ -974,6 +979,11 @@ admins = ["github:1234"]
 name = "jot"
 checkout = "/srv/egm/jot"
 host = "github"
+monthly_tokens = 20000000           # optional
+
+[worker]                            # optional: run egm-dsh jobs from the app
+egm_dsh = "/usr/local/bin/egm-dsh"
+pass_env = ["DEEPSEEK_API_KEY"]
 
 [github]
 client_id = "Iv1.abc"
@@ -1050,6 +1060,9 @@ The default launcher is `npx -y @deepseek-ai/dsh@latest`; set `"dsh_command"` in
 | An author never reviews or approves their own feature; only an approver approves a high-risk merge; the worker never reviews, approves or changes roles; adding a role never takes an action away | `proofs/EgmPolicy.lean`: `author_never_approves`, `high_risk_needs_approver`, `worker_limited`, `monotone`; `cargo test` (`policy`: the same four facts over all 4,224 cases) |
 | An auditor's export of a feature holds exactly the events the app replays for it; a feature's history only grows at the end; a retried write under one idempotency key is recorded once | `proofs/VesdbLink.lean`: `export_exact`, `history_prefix`, `retry_once` (Vesdb's own `receipt_binding`, `no_fork`, `ack_durable`, `idempotent` are proved in its repository); `run_audit_e2e.py`: pushing twice writes nothing new, a killed writer loses and doubles nothing, `vesdb-verify` fails a bucket with one changed byte |
 | Every egm-team page and route checks the policy before it reads anything; an outsider gets 403 on every project page and each refusal is recorded; sign-ins are recorded before the session starts | `crates/egm-web/tests/policy_lint.rs` (reads every handler; also proves it catches a missing check); `run_web_e2e.py` (Chromium, Postgres 16, Vesdb, fake GitHub and GitLab with PKCE checked, a fake SMTP server: 61 checks) |
+| A job runs one at a time per project, oldest first, and none starts once the project is at its monthly token ceiling | `proofs/EgmQueue.lean`: `start_keeps_one_per_project`, `finish_keeps_one_per_project`, `start_is_oldest`, `start_under_ceiling`, `refuse_only_over`; `cargo test` (`queue`: every queue of up to four jobs); `run_jobs_e2e.py` (no two jobs of a project overlap in Vesdb; a job at the ceiling is refused, recorded) |
+| A full feature, idea to evidence, runs in the browser, and the state the app shows equals the state the log replays to | `run_jobs_e2e.py` (egm-team, its worker, the real egm-dsh on its offline mock agent, Vesdb, Postgres 16, Chromium: 36 checks). egm-dsh's own `status`, `egm-audit replay-vesdb` and the app agree on phase and doc hash; after `rebuild` the feature, chat, jobs, cost and history are unchanged; after the server is killed mid-job, that job is `abandoned` and the queued one runs |
+| A job never sees egm-team's secrets | `worker.rs` unit test; `run_jobs_e2e.py` reads every job's environment |
 | Separation of duties: nobody reviews or approves their own feature; a merge approval needs a built feature, a gate passed for the current doc and an approving review by someone else; a high-risk (or unassessed) merge needs the approver | `proofs/EgmPolicy.lean`: `merge_never_self`, `merge_needs_gate`, `merge_needs_other_review`, `merge_high_needs_approver`; `cargo test` (`policy`: all 6,144 combinations); `run_web_e2e.py` (the author's review, label and approvals are 403 and recorded; the reviewer's high-risk approval is 403; the approver's succeeds) |
 | The goldfish MCC in egm-team counts each labelled alarm once, with its latest label | `proofs/EgmLabels.lean`: `confusion_total`, `perfect_agreement`, `relabel_moves_one`; `run_web_e2e.py` (the page's MCC equals the MCC of the clicks, and survives a rebuild) |
 | The Rust gate matches the Lean model | `cargo test`: all 117,649 event traces up to length 6; the invariant is also asserted on every save |
@@ -1105,7 +1118,10 @@ Cost: about $0.08 per doc and repeat at peak rates. The test split with 3 repeat
 - The elephant's view is a cost control, not a sandbox: a read outside it (by absolute path, or by shell where the preset allows one) is warned about, not refused. Each elephant turn copies the view afresh, which costs time on a very large repository; a scope keeps it small.
 - The word limit is a request to the model; egm-dsh reports overruns but does not cut text. It is the one that should read the project, and it may also read `.egm-dsh/`.
 - The termination proof covers egm's own steps. A human can keep editing the doc forever; each edit only reopens design.
-- egm-team does not run egm-dsh yet, and approving a merge records the approval but does not merge on GitHub or GitLab (phases 4 and 5). Until the worker exists, events reach the app by `egm-dsh --events` plus `egm-audit push`, and docs by keeping the team's checkout current.
+- Approving a merge in egm-team records the approval but does not merge on GitHub or GitLab (phase 5).
+- egm-team's monthly token ceiling is checked before a job starts, not during it, so the job that crosses the ceiling finishes and the project can end the month above it by that job's use. egm-dsh's own per-feature ceiling (`set-ceiling`) still refuses a step whose estimate would cross it.
+- Job output (terminal lines, which may quote code) lives in Postgres only, not in the audit log; Vesdb holds each job's request, start, end, domain events and token counts. Escalation, decisions, `tests` and the fix lane are not yet buttons in the app; run them with the CLI in the checkout and push the events.
+- The worker runs one checkout per project on its own machine; it is not yet sandboxed beyond egm-dsh's own sandbox for agents and checks.
 - The goldfish MCC in egm-team means little until reviewers have labelled at least 29 real and 29 noise alarms; the page says so. Gate MCC needs defects found after merge (phase 5). Human minutes count only time spent in the app, capped at 30 minutes per gap.
 - egm-team is built on Topcoat 0.12, which its authors call experimental. It is pinned exactly and kept in one crate so an upgrade, or a move to axum and htmx, touches only the UI.
 - Vesdb is young (0.1) and has not been independently audited. An auditor may ask for such a review before relying on it.

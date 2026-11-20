@@ -68,6 +68,10 @@ pre{white-space:pre-wrap;background:#fff;border:1px solid #ddd;padding:12px}\
 td code{white-space:pre-wrap;word-break:break-all;font-size:12px}.nowrap{white-space:nowrap}\
 .ok{color:#176f2c}.bad{color:#b3261e}.muted{color:#666;font-size:13px}nav.tabs a{margin-right:14px}\
 pre{overflow-wrap:anywhere}\
+#log{background:#111;color:#ddd;font:13px ui-monospace,Menlo,monospace;padding:10px 12px;border-radius:6px;overflow-x:auto}\
+#log .line{display:flex;gap:10px;padding:1px 0}#log .who{flex:0 0 72px;color:#8ab4f8;text-align:right}\
+#log .text{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0}#log .sp-ok .text{color:#7ee2a8}#log .sp-warn .text,#log .sp-error .text{color:#ff8a80}\
+#log .sp-elephant .who{color:#c9a6ff}#log .sp-goldfish .who{color:#ffc062}\
 @media (max-width:600px){main,header{padding:10px 16px}table{display:block;overflow-x:auto}.nowrap{white-space:normal}}";
 
 #[layout("/")]
