@@ -931,6 +931,10 @@ egm-audit bundle 0 1 2                            # offline evidence bundle; che
 | `/p/<project>/members` | Who holds which roles |
 | `/p/<project>/audit` | Every audit event of the project |
 
+![A feature in egm-team: the design doc, its revisions, goldfish reviews, evidence and history](docs/screenshots/04-feature-page.png)
+
+More screens in the [user guide](docs/USER_GUIDE.md#screens).
+
 **Where the data comes from.** Postgres holds views rebuilt from the Vesdb audit log (`egm-team rebuild` drops and replays them); words people read (docs, review findings, evidence) come from the project's checkout, read-only. The log, not the database, is the record.
 
 **Sign-in.** GitHub or GitLab OAuth (authorization code; GitLab with PKCE). egm-team asks only for the user's identity and keeps the user's id, login and name. Sessions are `__Host-` cookies, HttpOnly and SameSite=Lax, stored hashed. Every sign-in is written to Vesdb before the session starts; with Vesdb down, nobody signs in.

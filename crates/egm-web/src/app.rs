@@ -14,10 +14,11 @@ use egm_core::policy::Action;
 use serde_json::{json, Value};
 use topcoat::context::Cx;
 use topcoat::cookie::{time::Duration, Cookie, CookieLayer, Cookies, SameSite, cookies};
-use topcoat::router::error::{bad_request, not_found, see_other, SeeOther};
+use topcoat::router::error::{bad_request, not_found, see_other, ForbiddenError, NotFoundError, SeeOther};
 use topcoat::router::{layout, page, path_param, query_params, route, Router, Slot};
 use topcoat::session;
-use topcoat::view::{component, view, View};
+use topcoat::router::StatusCode;
+use topcoat::view::{component, error_boundary, view, View};
 use topcoat::Result;
 
 pub fn router(state: crate::App) -> Router {
@@ -51,8 +52,10 @@ header a{color:inherit;text-decoration:none}main{padding:16px 24px;max-width:110
 table{border-collapse:collapse;width:100%;background:#fff}th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #eee;vertical-align:top}\
 pre{white-space:pre-wrap;background:#fff;border:1px solid #ddd;padding:12px}\
 .phase{display:inline-block;padding:1px 8px;border-radius:10px;background:#eef;font-size:13px}\
+td code{white-space:pre-wrap;word-break:break-all;font-size:12px}.nowrap{white-space:nowrap}\
 .ok{color:#176f2c}.bad{color:#b3261e}.muted{color:#666;font-size:13px}nav.tabs a{margin-right:14px}\
-@media (max-width:600px){main,header{padding:10px 16px}}";
+pre{overflow-wrap:anywhere}\
+@media (max-width:600px){main,header{padding:10px 16px}table{display:block;overflow-x:auto}.nowrap{white-space:normal}}";
 
 #[layout("/")]
 async fn root(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
@@ -77,7 +80,33 @@ async fn root(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                         </form>
                     }
                 </header>
-                <main>(slot)</main>
+                <main>
+                    error_boundary(
+                        fallback: |error| {
+                            let forbidden = if error.downcast_ref::<ForbiddenError>().is_some() {
+                                true
+                            } else if error.downcast_ref::<NotFoundError>().is_some() {
+                                false
+                            } else {
+                                return Err(error);
+                            };
+                            Ok(view! {
+                                if forbidden {
+                                    (StatusCode::FORBIDDEN)
+                                    <h1 id="forbidden">"No access"</h1>
+                                    <p>"You have no role in this project, so egm-team cannot show it to you. The refusal has been recorded in the audit log."</p>
+                                    <p>"Ask a project admin to add you."</p>
+                                } else {
+                                    (StatusCode::NOT_FOUND)
+                                    <h1 id="not-found">"Not found"</h1>
+                                    <p>"There is no such project, feature or revision."</p>
+                                }
+                                <p><a href="/">"Back to your projects"</a></p>
+                            })
+                        },
+                        (slot)
+                    )
+                </main>
             </body>
         </html>
     })
@@ -261,7 +290,7 @@ async fn board(cx: &Cx) -> Result<impl View> {
                     for f in feats.iter().filter(|f| f.phase == col) {
                         <div class="card" style="background:#fff;border:1px solid #ddd;padding:8px;margin-bottom:8px">
                             <a href=(format!("/p/{p}/f/{}", f.slug))>(&f.slug)</a>
-                            <div class="muted">(&f.updated_at)</div>
+                            <div class="muted">(when(&f.updated_at))</div>
                             if let Some(e) = &f.replay_error { <div class="bad">(e)</div> }
                         </div>
                     }
@@ -327,7 +356,7 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
                 for r in &revs {
                     <tr>
                         <td><a href=(format!("/p/{p}/f/{slug}/rev/{}", r.commit))>(&r.commit[..10])</a></td>
-                        <td>(&r.date)</td><td>(&r.author)</td><td>(&r.subject)</td>
+                        <td>(when(&r.date))</td><td>(&r.author)</td><td>(&r.subject)</td>
                     </tr>
                 }
             </table>
@@ -363,7 +392,7 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
         <table id="history">
             <tr><th>"#"</th><th>"Event"</th><th>"By"</th><th>"When"</th></tr>
             for e in &events {
-                <tr><td>(e.id)</td><td>(&e.kind)</td><td>(&e.actor)</td><td>(&e.at)</td></tr>
+                <tr><td>(e.id)</td><td>(&e.kind)</td><td>(&e.actor)</td><td class="nowrap">(when(&e.at))</td></tr>
             }
         </table>
     })
@@ -382,6 +411,16 @@ async fn revision(cx: &Cx) -> Result<impl View> {
         <h1>(&f.doc)" at "(&r[..r.len().min(10)])</h1>
         <pre id="doc-at">(text)</pre>
     })
+}
+
+/// `2026-11-20T07:42:52.790765627Z` or `...+05:30` → `2026-11-20 07:42`, as recorded (UTC for log times).
+pub fn when(t: &str) -> String {
+    if t.len() >= 16 && t.as_bytes()[10] == b'T' {
+        let zone = if t.ends_with('Z') { " UTC".to_string() } else { t.get(19..).map(|z| format!(" {}", z.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit()))).unwrap_or_default() };
+        format!("{} {}{}", &t[..10], &t[11..16], zone)
+    } else {
+        t.to_string()
+    }
 }
 
 /// MCC from a confusion matrix; `None` when a margin is empty.
@@ -453,7 +492,7 @@ async fn audit_trail(cx: &Cx) -> Result<impl View> {
         <table id="audit">
             <tr><th>"#"</th><th>"Feature"</th><th>"Event"</th><th>"By"</th><th>"Data"</th><th>"When"</th></tr>
             for e in &events {
-                <tr><td>(e.id)</td><td>(&e.feature)</td><td>(&e.kind)</td><td>(&e.actor)</td><td><code>(e.data.to_string())</code></td><td>(&e.at)</td></tr>
+                <tr><td>(e.id)</td><td>(&e.feature)</td><td>(&e.kind)</td><td>(&e.actor)</td><td><code>(e.data.to_string())</code></td><td class="nowrap">(when(&e.at))</td></tr>
             }
         </table>
     })
@@ -461,6 +500,13 @@ async fn audit_trail(cx: &Cx) -> Result<impl View> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn times_are_short() {
+        assert_eq!(super::when("2026-11-20T07:42:52.790765627Z"), "2026-11-20 07:42 UTC");
+        assert_eq!(super::when("2026-11-20T13:12:40+05:30"), "2026-11-20 13:12 +05:30");
+        assert_eq!(super::when(""), "");
+    }
+
     #[test]
     fn mcc_matches_hand_values() {
         assert_eq!(super::mcc(5.0, 0.0, 5.0, 0.0), Some(1.0));

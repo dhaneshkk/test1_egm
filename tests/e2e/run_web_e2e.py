@@ -282,7 +282,7 @@ base_url = "{fake}"
             r = page.goto(f"{base}/p/jot/f/gap-ids/rev/..%2F..%2Fetc")
             checks["D: a path-traversal revision is 404"] = r.status == 404
             r = page.goto(f"{base}/p/nope")
-            checks["C: an unknown project is 404"] = r.status == 404
+            checks["C: an unknown project is 404, with a page that says so"] = r.status == 404 and page.locator("#not-found").count() == 1
 
             # A. sign-out
             page.goto(f"{base}/")
@@ -306,6 +306,7 @@ base_url = "{fake}"
             checks["C: an outsider sees no projects"] = page.locator("#no-projects").count() == 1
             statuses = {p: page.goto(f"{base}{p}").status for p in ["/p/jot", "/p/jot/f/gap-ids", "/p/jot/metrics", "/p/jot/members", "/p/jot/audit"]}
             checks["C: every project page is 403 for an outsider"] = set(statuses.values()) == {403}
+            checks["C: the 403 page explains it and keeps the header"] = page.locator("#forbidden").count() == 1 and page.inner_text("#viewer") == "otto"
             ctx.close()
 
             # A. forged state
@@ -326,6 +327,10 @@ base_url = "{fake}"
             out["rebuild"] = team("rebuild")
             ctx, page = session("adam")
             sign_in(page, "github")
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.goto(f"{base}/p/jot/f/gap-ids")
+            checks["phone: the feature page fits a 390-pixel screen without sideways scrolling"] = page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+            page.set_viewport_size({"width": 1280, "height": 800})
             page.goto(f"{base}/p/jot")
             checks["E: after a rebuild from Vesdb the admin sees the same board"] = "gap-ids" in page.inner_text(f'section[data-column="{phase}"]')
             page.goto(f"{base}/p/jot/members")

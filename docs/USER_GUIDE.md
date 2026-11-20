@@ -183,6 +183,19 @@ Open the address your admin gave you and choose **Sign in with GitHub** or **Sig
 | **Members** | Who holds which roles in the project |
 | **Audit trail** | Every recorded event of the project, newest first. Each one is in Vesdb's tamper-evident log and can be verified offline |
 
+### Screens
+
+Captured by the browser test (`tests/e2e/run_web_e2e.py`) against real egm-dsh output, Vesdb and Postgres, with a fake GitHub and GitLab for sign-in.
+
+| | |
+|---|---|
+| ![Sign in](screenshots/01-sign-in.png) **Sign in** | ![Projects](screenshots/02-projects.png) **Projects** |
+| ![Feature board](screenshots/03-feature-board.png) **Feature board** | ![Feature page](screenshots/04-feature-page.png) **Feature: doc, revisions, reviews, evidence, history** |
+| ![Doc at a revision](screenshots/05-doc-at-revision.png) **The doc at a past commit** | ![Metrics](screenshots/06-metrics.png) **Metrics** |
+| ![Members](screenshots/07-members.png) **Members** | ![Audit trail](screenshots/08-audit-trail.png) **Audit trail** |
+| ![No projects](screenshots/09-outsider-no-projects.png) **Signed in, no role yet** | ![No access](screenshots/10-outsider-no-access.png) **403: no role in this project** |
+| ![Phone board](screenshots/12-board-phone.png) **Board on a phone** | ![Phone feature](screenshots/13-feature-phone.png) **Feature page on a phone** |
+
 ### What you can do with each role
 
 Today the app is read-only: every role can read its projects. The other permissions below are already decided and proved, and take effect as the features arrive.
