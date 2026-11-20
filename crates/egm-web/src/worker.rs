@@ -123,6 +123,8 @@ struct State {
 /// Run the worker until the process ends. `wake` is notified when someone queues a job.
 pub async fn run(cfg: Config, log: Arc<dyn AuditLog>, wake: Arc<Notify>) {
     let Some(w) = cfg.worker.clone() else { return };
+    // the worker owns the checkouts, so it also pushes their egm-dsh branches to the code host
+    tokio::spawn(crate::host::run(cfg.clone(), log.clone()));
     let mut client = loop {
         match db::connect(&cfg.database_url).await {
             Ok(c) => break c,

@@ -13,6 +13,7 @@ pub mod checkout;
 pub mod collab;
 pub mod config;
 pub mod db;
+pub mod host;
 pub mod jobs;
 pub mod mail;
 pub mod oauth;

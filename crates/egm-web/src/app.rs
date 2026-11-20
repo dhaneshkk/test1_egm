@@ -9,6 +9,7 @@
 use crate::authz::{self, app};
 use crate::oauth::{self, Pending, Provider};
 use crate::collab::collab_panel;
+use crate::host::host_panel;
 use crate::jobs::{new_feature_form, run_panel};
 use crate::{checkout, db, Ah, SYSTEM};
 use egm_audit::AuditEvent;
@@ -45,6 +46,10 @@ pub fn router(state: crate::App) -> Router {
         .route(crate::jobs::run)
         .route(crate::jobs::job_log)
         .route(crate::jobs::job_js)
+        .route(crate::host::github_hook)
+        .route(crate::host::gitlab_hook)
+        .route(crate::host::export)
+        .route(crate::host::defect)
         .route(crate::collab::label)
         .route(crate::collab::comment)
         .route(crate::collab::review)
@@ -401,6 +406,8 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
         }
 
         collab_panel(p: p, slug: slug)
+
+        host_panel(p: p, slug: slug)
 
         <h2>"Evidence"</h2>
         match passed {

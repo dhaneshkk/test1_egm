@@ -41,14 +41,23 @@ enum Cmd {
     },
 }
 
+fn vesdb_log(cfg: &Config, token: &str) -> anyhow::Result<VesdbLog> {
+    let ca = match &cfg.vesdb_ca {
+        Some(p) => Some(std::fs::read(p).map_err(|e| anyhow::anyhow!("vesdb_ca {}: {e}", p.display()))?),
+        None => None,
+    };
+    Ok(VesdbLog::with_ca(&cfg.vesdb_url, token, &cfg.source, ca.as_deref())?)
+}
+
 fn vesdb(cfg: &Config) -> Arc<dyn AuditLog> {
-    Arc::new(VesdbLog::new(&cfg.vesdb_url, &cfg.vesdb_token, &cfg.source))
+    Arc::new(vesdb_log(cfg, &cfg.vesdb_token).expect("vesdb_ca was read when the configuration loaded"))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config)?;
+    vesdb_log(&cfg, &cfg.vesdb_token)?; // a bad CA file fails here, not at the first write
     match cli.cmd {
         Cmd::Serve => {
             let log = vesdb(&cfg);

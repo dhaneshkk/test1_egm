@@ -34,6 +34,9 @@ pub struct Config {
     pub public_url: String,
     pub database_url: String,
     pub vesdb_url: String,
+    /// PEM file of the CA to trust when `vesdb_url` is `https://` (Vesdb behind a TLS proxy
+    /// with a private CA). Without it, the usual public roots.
+    pub vesdb_ca: Option<PathBuf>,
     #[serde(default = "default_source")]
     pub source: String,
     #[serde(default)]
@@ -64,6 +67,34 @@ pub struct ProjectConfig {
     /// Most tokens the project's jobs may use in a calendar month (UTC). A job is refused once
     /// the month's use has reached it; the job that crosses it is not stopped.
     pub monthly_tokens: Option<u64>,
+    /// GitHub `owner/repo` or GitLab project path. Turns on the code-host integration: commit
+    /// statuses, a pull or merge request per feature, branch pushes and webhooks. The token comes
+    /// from `EGM_HOST_TOKEN_<NAME>` and the webhook secret from `EGM_WEBHOOK_SECRET_<NAME>`
+    /// (`<NAME>`: the project name in capitals, `-` as `_`).
+    pub repo: Option<String>,
+    /// Where the worker pushes `egm-dsh/<feature>` branches; by default the host's HTTPS URL.
+    pub push_url: Option<String>,
+    /// The branch pull and merge requests target.
+    #[serde(default = "default_base_branch")]
+    pub base_branch: String,
+    /// Days to keep job output and other Postgres-only data, and after which `egm-team redact`
+    /// erases people's words from Vesdb. Off when absent.
+    pub retention_days: Option<u32>,
+    #[serde(skip)]
+    pub host_token: String,
+    #[serde(skip)]
+    pub webhook_secret: String,
+}
+
+fn default_base_branch() -> String {
+    "main".into()
+}
+
+impl ProjectConfig {
+    /// `EGM_HOST_TOKEN_<NAME>` and `EGM_WEBHOOK_SECRET_<NAME>` for this project.
+    pub fn env_name(&self, prefix: &str) -> String {
+        format!("{prefix}{}", self.name.to_uppercase().replace('-', "_"))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,9 +198,22 @@ impl Config {
                 m.password = std::env::var("EGM_SMTP_PASSWORD").map_err(|_| anyhow::anyhow!("set EGM_SMTP_PASSWORD"))?;
             }
         }
-        for p in &c.projects {
+        for p in &mut c.projects {
             anyhow::ensure!(valid_name(&p.name) && p.name != crate::SYSTEM, "project name `{}`: use letters, digits, `-` and `_`", p.name);
             anyhow::ensure!(p.host == "github" || p.host == "gitlab", "project `{}`: host must be github or gitlab", p.name);
+            if let Some(repo) = &p.repo {
+                anyhow::ensure!(
+                    !repo.is_empty() && repo.split('/').all(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))),
+                    "project `{}`: repo must look like owner/name", p.name
+                );
+                let (t, s) = (p.env_name("EGM_HOST_TOKEN_"), p.env_name("EGM_WEBHOOK_SECRET_"));
+                p.host_token = std::env::var(&t).map_err(|_| anyhow::anyhow!("project `{}` has a repo: set {t}", p.name))?;
+                p.webhook_secret = std::env::var(&s).map_err(|_| anyhow::anyhow!("project `{}` has a repo: set {s}", p.name))?;
+                anyhow::ensure!(p.webhook_secret.len() >= 20, "{s} must have at least 20 characters");
+                anyhow::ensure!(if p.host == "github" { c.github.is_some() } else { c.gitlab.is_some() },
+                    "project `{}`: configure [{}] (its API address)", p.name, p.host);
+            }
+            anyhow::ensure!(valid_name(&p.base_branch.replace('/', "_")), "project `{}`: base_branch", p.name);
         }
         if let Some(w) = &c.worker {
             for v in &w.pass_env {
