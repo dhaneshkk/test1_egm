@@ -329,7 +329,7 @@ pub async fn collab_panel(cx: &Cx, p: &str, slug: &str) -> Result<impl View> {
             </ul>
         }
         if st.approved {
-            <p class="ok" id="merge-approved">"Approved for merge. Merging on GitHub or GitLab comes with phase 5."</p>
+            <p class="ok" id="merge-approved">"Approved for merge. Merge it on GitHub or GitLab: the egm/merge-approval status there is green once the evidence gate is too."</p>
         } else {
             match &merge_reason {
                 None => <form method="POST" action=(format!("/p/{p}/f/{slug}/approve"))><button id="approve-merge">"Approve merge"</button></form>,

@@ -534,7 +534,13 @@ pub async fn export(cx: &Cx) -> Result<Download> {
         .map_err(|e| topcoat::Error::from_anyhow(e.into()))?.iter().map(|r| r.get::<_, i64>(0) as u64).collect();
     let log = a.log.clone();
     let ids2 = ids.clone();
-    let bundle = tokio::task::spawn_blocking(move || log.bundle(&ids2)).await??;
+    let bundle = match tokio::task::spawn_blocking(move || log.bundle(&ids2)).await? {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("egm-team: export of {p}/{slug}: {e}");
+            return Err(e.into());
+        }
+    };
     let body = serde_json::to_vec_pretty(&bundle).map_err(|e| topcoat::Error::from_anyhow(e.into()))?;
     let digest = hex(&Sha256::digest(&body));
     let ev = AuditEvent { kind: "export.created".into(), project: p.into(), feature: slug.into(), actor: v.id.clone(), data: json!({"events": ids.len(), "sha256": digest}) };

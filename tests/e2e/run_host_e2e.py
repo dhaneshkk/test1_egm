@@ -405,6 +405,7 @@ egm_dsh = "{EGM_BIN}"
             resp = ada.request.get(f"{base}/p/gh/f/gap-ids/export")
             bundle = work / "bundle.json"
             bundle.write_bytes(resp.body())
+            out["export"] = (resp.status, dict(resp.headers).get("content-type"), resp.body()[:400])
             v_ok = subprocess.run([VERIFY, "bundle", str(bundle), "--log-key", f"{key}.pub"], capture_output=True, text=True, timeout=60)
             text = bundle.read_text()
             i = text.find('"data"')

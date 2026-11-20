@@ -170,7 +170,7 @@ VESDB_URL=https://vesdb.example VESDB_TOKEN=... \
 
 ### Sign in
 
-Open the address your admin gave you and choose **Sign in with GitHub** or **Sign in with GitLab**. egm-team asks the provider only who you are; it never sees your password or your repositories. If you see "You are not a member of any project yet", ask an admin to add you (Part 3, step 5).
+Open the address your admin gave you and choose **Sign in with GitHub** or **Sign in with GitLab**. egm-team asks the provider only who you are; it never sees your password or your repositories. If you see "You are not a member of any project yet", ask an admin to add you (Part 3, step 6).
 
 ### Find your way
 
@@ -181,7 +181,7 @@ Open the address your admin gave you and choose **Sign in with GitHub** or **Sig
 | **Feature** (click a card) | The design doc as it is in the checkout; its git revisions (click one to read the doc as it was then); every goldfish review round with its verdict and how many alarms it kept; the evidence gate's checks, risk tier and seeded-bug score; the feature's audit history |
 | **Jobs** (`/p/<project>/jobs`) | Every egm-dsh job run from the app: queued, running, done, failed or refused, with its tokens. Click one to read its output |
 | **Review inbox** (header link) | Features waiting for your review in every project where you review: built, the evidence gate passed for the current doc, not yet approved, not written by you. Highest risk first |
-| **Metrics** | Features by phase, goldfish and evidence-gate verdict counts; the goldfish MCC from reviewers' labels; human minutes per feature, measured from activity in the app |
+| **Metrics** | Features by phase, goldfish and evidence-gate verdict counts; the goldfish MCC from reviewers' labels; human minutes per feature, measured from activity in the app; review times (medians with 95% intervals); gate outcomes after merge; cost |
 | **Members** | Who holds which roles in the project |
 | **Audit trail** | Every recorded event of the project, newest first. Each one is in Vesdb's tamper-evident log and can be verified offline |
 
@@ -205,7 +205,16 @@ Everything below is on the feature page, under the goldfish reviews. Each action
 - **Comment.** Pick what the comment is about (the whole doc, one `##` section, or one alarm) and write it. Developers, reviewers and approvers can comment, the author included. The author is mailed when someone else comments.
 - **Label alarms** (reviewers and approvers). For each goldfish alarm, say whether it was a **Real** gap in the doc or **Noise**. Click again to change your mind; the latest label counts. Notes are not listed: they never count against a doc, so there is nothing to score. Your labels score the goldfish on the Metrics page: an alarm the goldfish kept is its prediction of a real gap, your label is the truth. Below 29 labels in either class the MCC carries a warning; treat it as a sketch until then.
 - **Review** (reviewers and approvers, once the feature is built). **Approve**, or **Request changes** with a note saying what must change. A review is for the doc as it is now; after the doc changes, earlier reviews are shown as "an earlier revision" and no longer count.
-- **Approve the merge.** The panel lists the four things a merge approval needs and which are missing: the author is recorded, the feature is built, the evidence gate passed for this doc, and someone other than the author approved it in a review. A low- or medium-risk feature can then be approved by a reviewer; a high-risk one, or one whose risk was never assessed, only by an approver. The author never can, whatever roles they hold. Merging on GitHub or GitLab itself comes with phase 5.
+- **Approve the merge.** The panel lists the four things a merge approval needs and which are missing: the author is recorded, the feature is built, the evidence gate passed for this doc, and someone other than the author approved it in a review. A low- or medium-risk feature can then be approved by a reviewer; a high-risk one, or one whose risk was never assessed, only by an approver. The author never can, whatever roles they hold. You then merge on GitHub or GitLab, where the `egm/merge-approval` status turns green (below).
+
+### On GitHub or GitLab
+
+When the project has a repository configured, everything above shows up on the code host too:
+
+- The feature's branch `egm-dsh/<feature>` is pushed after each build, and a pull request (GitHub) or merge request (GitLab) is opened for it. Its description shows the evidence gate's checks and how to get the audit bundle. egm-team rewrites it as things change, so edit the discussion, not the description.
+- Two statuses sit on the branch head. **`egm/evidence-gate`** is green when the evidence gate passed after the latest build, for the current doc. **`egm/merge-approval`** is green when, after that, someone other than the author approved the merge in egm-team. Your admin makes both required, so the merge button stays locked until both are green. A new push to the branch turns both back to waiting.
+- When the change is merged, egm-team records who merged it. If the merge commit is later reverted, or someone uses **Report a defect** on the feature page, that counts against the gate on the Metrics page (Gate outcomes).
+- **Export the audit bundle** (approvers, admins, auditors) downloads every event of the feature with Vesdb's proofs, for an auditor to check offline.
 
 **Mail.** When mail is configured (Part 3), egm-team mails reviewers and approvers when a feature's evidence gate passes, and mails the author when someone else comments, reviews, or approves the merge. Nobody is mailed about their own action. The address is the one your GitHub or GitLab account shows publicly; with none, you get no mail.
 
@@ -229,6 +238,7 @@ Captured by the browser test (`tests/e2e/run_web_e2e.py`) against real egm-dsh o
 | ![Job running](screenshots/20-job-running.png) **A job page following a running job** | ![Design chat](screenshots/21-design-chat.png) **The design chat with the elephant** |
 | ![Run panel](screenshots/22-run-jobs-cost.png) **Run buttons and the feature's jobs** | ![Jobs](screenshots/23-jobs-queue.png) **The project's job queue** |
 | ![Refused at the ceiling](screenshots/24-ceiling-refused.png) **A job refused at the monthly ceiling** | ![Cost](screenshots/25-metrics-cost.png) **Tokens this month and cost per feature** |
+| ![Code host](screenshots/26-code-host.png) **Pull request, both commit statuses, the merge and a revert** | ![Review times](screenshots/27-review-gate-metrics.png) **Review times and gate outcomes** |
 
 ### What you can do with each role
 
@@ -290,7 +300,8 @@ Create a Vesdb token with the read and write scopes (add audit if the same token
 listen       = "127.0.0.1:8080"
 public_url   = "https://egm-team.example"
 database_url = "host=/run/postgresql dbname=egm"
-vesdb_url    = "http://vesdb-a:3000,http://vesdb-b:3000"   # the load balancer, or both servers
+vesdb_url    = "https://vesdb.internal:8443"                # Vesdb behind its TLS proxy (or both servers)
+vesdb_ca     = "/etc/egm-team/vesdb-ca.pem"                 # the CA that proxy's certificate comes from
 admins       = ["github:1234"]                              # admin role in every project
 refresh_ms   = 1000                                         # how often to read new events
 
@@ -299,6 +310,9 @@ name     = "my-project"            # letters, digits, - and _
 checkout = "/srv/egm/my-project"
 host     = "github"                # or "gitlab"
 monthly_tokens = 20000000          # optional: refuse jobs once the month's use reaches this
+repo        = "acme/my-project"    # optional: GitHub owner/repo or GitLab project path
+base_branch = "main"               # what pull and merge requests target
+retention_days = 365               # optional: how long people's words and job output are kept
 
 [github]
 client_id = "Iv1.abc"
@@ -330,19 +344,31 @@ Secrets come from the environment only:
 | `EGM_GITHUB_CLIENT_SECRET` | Needed when `[github]` is configured |
 | `EGM_GITLAB_CLIENT_SECRET` | Needed when `[gitlab]` is configured |
 | `EGM_SMTP_PASSWORD` | Needed when `[mail]` has a `username` |
+| `EGM_DATABASE_URL` | Optional: replaces `database_url`, so a database password stays out of the file |
+| `EGM_HOST_TOKEN_<PROJECT>` | For a project with a `repo`: a token that may push `egm-dsh/*` branches, open pull or merge requests and set commit statuses (GitHub fine-grained: contents, pull requests, commit statuses; GitLab: a project access token with `api`). `<PROJECT>` is the project name in capitals, `-` as `_` |
+| `EGM_WEBHOOK_SECRET_<PROJECT>` | For a project with a `repo`: the webhook secret, at least 20 characters |
+| `EGM_VESDB_REDACT_TOKEN` | Only when an admin runs `egm-team redact --apply`; never in the server's environment |
 
 A job's process starts with an empty environment plus the allowlist above, so none of egm-team's own secrets (`EGM_*`) can reach a build; the configuration refuses an `EGM_` name in `pass_env`.
 
 A user id is the provider and the provider's numeric id, such as `github:1234` or `gitlab:5678`; it stays the same if they rename their account. Find a GitHub id at `https://api.github.com/users/<login>`, a GitLab id on the user's profile page.
 
-### 4. Start
+### 4. Connect GitHub or GitLab (optional)
+
+For each project with a `repo`:
+
+1. **Webhook.** GitHub: repository Settings → Webhooks → Add: payload URL `<public_url>/hooks/github/<project>`, content type `application/json`, the secret, events **Pull requests** and **Pushes**. GitLab: project Settings → Webhooks: URL `<public_url>/hooks/gitlab/<project>`, the secret token, **Merge request events** and **Push events**.
+2. **Branch protection** on the base branch: require the status checks `egm/evidence-gate` and `egm/merge-approval` (GitHub: required status checks; GitLab: "Pipelines must succeed", which counts external statuses). Allow only egm-team's token to push `egm-dsh/*`.
+3. The checkout's `origin` is not used: the worker pushes to `push_url` (by default the host's HTTPS URL) with the token, passed in git's environment, never on a command line.
+
+### 5. Start
 
 ```sh
 egm-team --config egm-team.toml serve
 curl -s https://egm-team.example/health      # ok
 ```
 
-### 5. Give people roles
+### 6. Give people roles
 
 ```sh
 egm-team --config egm-team.toml grant --project my-project --user github:5678 --roles developer --by github:1234
@@ -354,7 +380,7 @@ Each grant is written to Vesdb as `member.role-changed`, so the history of who h
 
 A field-test team of four could be two developers, one reviewer and one approver. With a single reviewer, the approver also reviews when the reviewer is away; the policy allows it because the approver is never the author.
 
-### 6. Day to day
+### 7. Day to day
 
 | Task | How |
 |---|---|
@@ -363,6 +389,10 @@ A field-test team of four could be two developers, one reviewer and one approver
 | See what jobs did | The project's Jobs page; each job keeps its full output. Output lives in Postgres only (it may quote code) and survives `rebuild` |
 | See failed mail | `SELECT to_addr, subject, error FROM outbox WHERE error IS NOT NULL` in Postgres; egm-team's log names each failure |
 | See refusals and sign-ins | The project's Audit trail page, or read `/egm/_system` and `/egm/<project>` from Vesdb |
+| Restore drill (quarterly) | `egm-team rebuild` on a fresh database; it records `ops.restore-tested` (see `docs/soc2/OPERATIONS.md`) |
+| Erase old words (quarterly) | `egm-team redact --project P` lists them; with `--apply` and `EGM_VESDB_REDACT_TOKEN` it erases them from Vesdb and records `ops.redacted` |
+| Evidence for the auditor | `egm-team evidence --from 2027-01-01 --to 2027-04-01 --out DIR`: `evidence.md`, `evidence.json` and `bundle.json` |
+| Readiness for the load balancer | `GET /health/ready`: 200 when Postgres and Vesdb answer, 503 naming which does not |
 | Upgrade | Topcoat is pinned to 0.12.1 and lives only in `crates/egm-web`; upgrade it there and run the browser test (`tests/e2e/run_web_e2e.py`) |
 
 If Vesdb is unreachable, nobody can sign in (a sign-in is recorded before the session starts) and refusals are reported in egm-team's log instead of the audit log. Pages people are already signed in to keep working from the views.
@@ -384,6 +414,16 @@ vesdb-verify bundle bundle.json --log-key log.pub --witness-key witness.pub
 
 `vesdb-verify` needs only the public keys; it does not trust any server. To check the whole log in its bucket: `vesdb-verify bucket s3://bucket/prefix --log-key log.pub`.
 
+### The evidence pack
+
+`egm-team evidence --from --to --out DIR` (run by the operator) writes, for the period:
+
+- `evidence.md`: every SOC 2 control in scope, how egm-team meets it, and a summary;
+- `evidence.json`: the data behind each control. It includes every merge, with whether the gate had passed and someone other than the author had approved it. Merges without a valid approval are listed as **exceptions**. It also includes access changes, refusals per user and action, restore drills, redactions and the models used;
+- `bundle.json`: an offline bundle of the period's change-management events. Check it with `vesdb-verify bundle bundle.json --log-key log.pub`.
+
+`docs/soc2/CONTROLS.md` maps each control, including the ones the organisation owns. `THREAT_MODEL.md` scopes the penetration test, and `OPERATIONS.md` covers backups, recovery targets and retention.
+
 ### Check that the app shows the record
 
 ```sh
@@ -403,6 +443,8 @@ The phase printed for each feature must match the board. That it always does is 
 | One job at a time per project, oldest first, and none started at or over the monthly token ceiling | `proofs/EgmQueue.lean`: `start_keeps_one_per_project`, `finish_keeps_one_per_project`, `start_is_oldest`, `start_under_ceiling`, `refuse_only_over`; `queue.rs` checks every queue of up to four jobs; `run_jobs_e2e.py` (no two jot jobs overlap in Vesdb; a job at the ceiling is refused) |
 | The state the app shows from jobs is the state the log replays to | `run_jobs_e2e.py`: egm-dsh's own `status`, `egm-audit replay-vesdb` and the app agree on phase and doc hash; after `rebuild` the feature, chat, jobs, cost and history are the same |
 | A job never sees egm-team's secrets | `worker.rs` unit test of the job environment; `run_jobs_e2e.py` reads every job's environment |
+| The code host merges only what egm-team's statuses allow | `proofs/EgmHost.lean`; `run_host_e2e.py` (GitHub and GitLab) |
+| An exported bundle verifies offline, before and after redaction | `run_host_e2e.py` with `vesdb-verify bundle` |
 | Every page checks the policy first | `crates/egm-web/tests/policy_lint.rs` fails the build otherwise |
 | No build without a goldfish pass of the current doc | `proofs/EgmGate.lean` |
 | The record cannot be changed unnoticed | Vesdb's Merkle log, witness-signed checkpoints and offline bundles (proved in Vesdb's repository); `run_audit_e2e.py` (one changed byte fails verification) |
@@ -459,16 +501,25 @@ Stored in Vesdb as `io.egm.<type>`.
 | `auth.signed-in` | egm-team | `_system` | user id, login, name, provider |
 | `auth.sign-in-failed` | egm-team | `_system` | provider, reason |
 | `policy.refused` | egm-team | project | action, reason; the actor is the refused user |
-| `comment.added` | egm-team | feature | target (doc, section or alarm), text, doc hash |
+| `comment.added` | egm-team | feature | target (doc, section or alarm), words key, doc hash |
 | `alarm.labelled` | egm-team | feature | round, alarm, valid or noise, whether the goldfish kept it, doc hash |
-| `review.submitted` | egm-team | feature | approve or changes, note, doc hash |
+| `review.submitted` | egm-team | feature | approve or changes, words key, doc hash |
 | `merge.approved` | egm-team | feature | doc hash, risk tier |
 | `job.requested` | egm-team | feature | command, its arguments (an idea or answer is the person's words, like a comment); the actor is the person |
 | `job.started` | worker | feature | job id, worker name |
 | `job.finished` | worker | feature | job id, status (ok, failed, refused, timeout, abandoned, error), exit code, tokens, reason |
 | `usage.recorded` | egm-dsh | feature | role, agent, model, token counts, price in dollars (none for an unpriced model) |
+| `words.recorded` | egm-team | feature | a person's words for the action that follows it (comment, review note, idea, answer, defect note), under a random key; erased by `egm-team redact` |
+| `host.pr-opened` | worker | feature | pull or merge request number, URL, branch |
+| `host.status-set` | worker | feature | commit, status name, state, description |
+| `merge.completed` | webhook | feature | request number, merge commit, base branch, who merged |
+| `change.reverted` | webhook | feature | merge commit, revert commit |
+| `defect.reported` | egm-team | feature | words key (the note is in `words.recorded`) |
+| `export.created` | egm-team | feature | events in the bundle, its SHA-256 |
+| `ops.restore-tested` | `egm-team rebuild` | `_system` | events replayed, seconds |
+| `ops.redacted` | `egm-team redact` | project | events erased, the cutoff |
 
-Comments and review notes are the one place people's words enter the log, because they are the review record. Planned with later phases: `project.settings-changed`, `export.created`.
+People's words enter the log only in `words.recorded` events, so retention can erase them and keep the actions. Not written yet: `project.settings-changed` (settings live in the configuration file).
 
 ### Files egm-dsh keeps
 
@@ -494,7 +545,10 @@ Comments and review notes are the one place people's words enter the log, becaus
 | egm-team won't start: "set EGM_..." | A secret is missing from the environment | Export the variable it names |
 | A feature card shows a red line | The audit log holds a gate step the gate refuses: written by something other than egm-dsh | Check the feature's audit history; report it |
 | A built feature is not in the review inbox | The gate has not passed for the current doc, the merge is already approved, or you wrote it | Open the feature: the merge panel says which |
-| No mail arrives | `[mail]` is not configured, your provider account shows no public email, or the SMTP server refused it | Ask the admin to check the outbox (Part 3, step 6) |
+| No mail arrives | `[mail]` is not configured, your provider account shows no public email, or the SMTP server refused it | Ask the admin to check the outbox (Part 3, step 7) |
 | Jobs stay "queued" | No worker runs: add `[worker]` to the configuration, or start `egm-team worker` | The Jobs page says when the server runs no worker |
 | Every job of one project is refused | The project reached `monthly_tokens` this month | Raise it in the configuration, or wait for the next month (UTC) |
+| `egm/merge-approval` stays pending | No approval yet by someone other than the author after the latest gate, or a new push reset it | Open the feature in egm-team: the Code host panel says why |
+| A pull request never appears | No `repo`, a missing `EGM_HOST_TOKEN_<PROJECT>`, or the token cannot push | egm-team's log names the failing call |
+| Webhook deliveries fail with 401 | The secret differs from `EGM_WEBHOOK_SECRET_<PROJECT>` | Set the same secret on both sides; each failure is a refusal in the audit trail |
 | Everyone is signed out after a restart | Sessions live in Postgres; a new database means new sessions | Sign in again; nothing in the record is lost |

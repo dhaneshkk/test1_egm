@@ -542,7 +542,7 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
             <tr><td>"Evidence gate"</td><td>(py)</td><td>(pn)</td></tr>
         </table>
         <h2>"MCC"</h2>
-        <p class="muted">"Goldfish MCC scores the goldfish against reviewers' labels: an alarm the goldfish kept is a predicted gap, an alarm a reviewer labelled real is an actual one. Notes are not scored. Gate MCC needs defects found after merge and comes with phase 5."</p>
+        <p class="muted">"Goldfish MCC scores the goldfish against reviewers' labels: an alarm the goldfish kept is a predicted gap, an alarm a reviewer labelled real is an actual one. Notes are not scored. The gate's own track record is under Gate outcomes."</p>
         if labelled == 0 {
             <p id="mcc">"No alarms labelled yet, so there is nothing to score."</p>
         } else {

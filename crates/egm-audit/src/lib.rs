@@ -307,6 +307,12 @@ impl VesdbLog {
 }
 
 fn is_transport(e: &ureq::Error) -> bool {
+    // a certificate the pinned CA does not vouch for is a configuration error, not an outage:
+    // retrying would only delay the message
+    let text = e.to_string().to_lowercase();
+    if text.contains("certificate") || text.contains("unknownissuer") || text.contains("tls") {
+        return false;
+    }
     matches!(e, ureq::Error::Io(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound | ureq::Error::Timeout(_))
 }
 
@@ -384,8 +390,17 @@ impl AuditLog for VesdbLog {
     /// (needs the `audit` scope). An auditor checks it with `vesdb-verify`, trusting no server.
     fn bundle(&self, ids: &[u64]) -> Result<Value, AuditError> {
         let body = json!({"ids": ids.iter().map(u64::to_string).collect::<Vec<_>>()}).to_string();
-        let (s, t) = self.call("POST", "/api/v2/tlog/bundle", &body, None)?;
-        ok_json(s, &t)
+        // Vesdb signs a checkpoint every second or so; events newer than the latest cosigned one
+        // are not provable yet, so wait for the next checkpoint (up to 30 s) instead of failing
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (s, t) = self.call("POST", "/api/v2/tlog/bundle", &body, None)?;
+            if (t.contains("no cosigned checkpoint covers") || t.contains("is not covered by checkpoint")) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            return ok_json(s, &t);
+        }
     }
 }
 
