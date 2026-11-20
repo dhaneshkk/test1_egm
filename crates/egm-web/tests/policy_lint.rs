@@ -50,15 +50,21 @@ fn violations(hs: &[Handler]) -> Vec<String> {
         let project_scoped = h.attr.contains("{project}");
         let ok = if project_scoped {
             // the project param is read first, then checked: allow `let p = project(cx);` before it
-            h.first_statement.contains("authz::require(") || (h.first_statement.contains("project(cx)") && h.first_statement.starts_with("let "))
+            is_check(&h.first_statement) || (h.first_statement.contains("project(cx)") && h.first_statement.starts_with("let "))
         } else {
-            h.first_statement.contains("authz::require(") || h.first_statement.contains("authz::signed_in(")
+            is_check(&h.first_statement) || h.first_statement.contains("authz::signed_in(")
         };
         if !ok {
             bad.push(format!("{}: `{}` ({}) does not start with a policy check: {}", h.file, h.name, h.attr, h.first_statement));
         }
     }
     bad
+}
+
+/// `authz::require(..)`, or `authz::require_feature(..)` (also bound: `let (v, st) = authz::require_feature(..)`).
+fn is_check(l: &str) -> bool {
+    let rhs = l.strip_prefix("let ").and_then(|r| r.split_once(" = ")).map(|(_, r)| r).unwrap_or(l);
+    rhs.starts_with("authz::require(") || rhs.starts_with("authz::require_feature(")
 }
 
 /// For project-scoped handlers whose first line reads the path params, the check must be the
@@ -73,7 +79,7 @@ fn second_statement_checks(file: &str, src: &str) -> Vec<String> {
         }
         let Some(j) = (i + 1..lines.len()).find(|&j| lines[j].contains("fn ")) else { continue };
         let body: Vec<&str> = (j + 1..lines.len()).map(|k| lines[k].trim()).filter(|l| !l.is_empty() && !l.starts_with("//")).take(2).collect();
-        if body.first().is_some_and(|l| l.starts_with("let ") && l.contains("project(cx)")) && !body.get(1).is_some_and(|l| l.starts_with("authz::require(")) {
+        if body.first().is_some_and(|l| l.starts_with("let ") && l.contains("project(cx)")) && !body.get(1).is_some_and(|l| is_check(l)) {
             bad.push(format!("{file}: handler at line {} reads its params but does not check the policy next", j + 1));
         }
     }
@@ -118,6 +124,21 @@ async fn sneaky(cx: &Cx) -> Result<impl View> {
     Ok(view! { "y" })
 }
 
+#[route(POST "/p/{project}/f/{feature}/ok")]
+async fn bound(cx: &Cx) -> Result<SeeOther> {
+    let (p, slug) = (project(cx), feature(cx));
+    let (v, st) = authz::require_feature(cx, p, slug, Action::Comment).await?;
+    Ok(back())
+}
+
+#[route(POST "/p/{project}/f/{feature}/late")]
+async fn late(cx: &Cx) -> Result<SeeOther> {
+    let (p, slug) = (project(cx), feature(cx));
+    let st = db::feature_state(&*app(cx).db, p, slug).await.ah()?;
+    let (v, st) = authz::require_feature(cx, p, slug, Action::Comment).await?;
+    Ok(back())
+}
+
 #[page("/p/{project}/fine")]
 async fn fine(cx: &Cx) -> Result<impl View> {
     let p = project(cx);
@@ -126,10 +147,11 @@ async fn fine(cx: &Cx) -> Result<impl View> {
 }
 "#;
     let hs = handlers("sample.rs", src);
-    assert_eq!(hs.len(), 3);
+    assert_eq!(hs.len(), 5);
     let mut bad = violations(&hs);
     bad.extend(second_statement_checks("sample.rs", src));
     assert!(bad.iter().any(|b| b.contains("sneaky")), "{bad:?}");
     assert!(bad.iter().any(|b| b.contains("does not check the policy next")), "{bad:?}");
-    assert!(!bad.iter().any(|b| b.contains("`fine`")), "{bad:?}");
+    assert!(!bad.iter().any(|b| b.contains("`fine`") || b.contains("`bound`")), "{bad:?}");
+    assert_eq!(bad.iter().filter(|b| b.contains("does not check the policy next")).count(), 2, "{bad:?}");
 }

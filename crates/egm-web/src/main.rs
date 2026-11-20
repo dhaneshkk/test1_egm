@@ -55,7 +55,12 @@ async fn main() -> anyhow::Result<()> {
             tokio::spawn(egm_web::projector(cfg.clone(), log.clone(), wake.clone()));
             let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
             eprintln!("egm-team: serving {} on {}", cfg.public_url, cfg.listen);
-            let state = App { cfg, db: Arc::new(client), log, refresh: wake };
+            let client = Arc::new(client);
+            if let Some(m) = cfg.mail.clone() {
+                let mail_db = Arc::new(db::connect(&cfg.database_url).await?);
+                tokio::spawn(egm_web::mail::sender(m, cfg.public_url.clone(), mail_db));
+            }
+            let state = App { cfg, db: client, log, refresh: wake };
             topcoat::serve(listener, app::router(state)).await?;
         }
         Cmd::Rebuild => {

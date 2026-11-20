@@ -49,6 +49,8 @@ pub struct Identity {
     pub id: String,
     pub login: String,
     pub name: String,
+    /// The address the provider shares (GitHub: the public one, if set), for notifications.
+    pub email: String,
 }
 
 /// What the browser keeps (in a short-lived, HttpOnly cookie) between the redirect to the
@@ -184,7 +186,8 @@ pub fn identify(app: &OAuthApp, public_url: &str, pending: &Pending, code: &str)
     .unwrap_or_default()
     .to_string();
     let name = u["name"].as_str().filter(|s| !s.is_empty()).unwrap_or(&login).to_string();
-    Ok(Identity { id: format!("{}:{id}", p.name()), login, name })
+    let email = u["email"].as_str().unwrap_or_default().to_string();
+    Ok(Identity { id: format!("{}:{id}", p.name()), login, name, email })
 }
 
 #[cfg(test)]

@@ -26,12 +26,36 @@ CREATE TABLE IF NOT EXISTS timeline (
     id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, kind text NOT NULL,
     actor text NOT NULL, data jsonb NOT NULL, at text NOT NULL);
 CREATE INDEX IF NOT EXISTS timeline_by_feature ON timeline (project, feature, id);
+ALTER TABLE features ADD COLUMN IF NOT EXISTS author text NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email text NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS comments (
+    id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, target text NOT NULL,
+    author text NOT NULL, body text NOT NULL, at text NOT NULL);
+CREATE TABLE IF NOT EXISTS labels (
+    project text NOT NULL, feature text NOT NULL, round int NOT NULL, alarm int NOT NULL,
+    label text NOT NULL, kept boolean NOT NULL, by_user text NOT NULL, event_id bigint NOT NULL,
+    at text NOT NULL, PRIMARY KEY (project, feature, round, alarm));
+CREATE TABLE IF NOT EXISTS reviews (
+    id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, reviewer text NOT NULL,
+    verdict text NOT NULL, note text NOT NULL, doc_hash text NOT NULL, at text NOT NULL);
+CREATE TABLE IF NOT EXISTS approvals (
+    id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, approver text NOT NULL,
+    doc_hash text NOT NULL, tier text NOT NULL, at text NOT NULL);
+CREATE TABLE IF NOT EXISTS activity (
+    user_id text NOT NULL, project text NOT NULL, feature text NOT NULL,
+    minutes double precision NOT NULL, last_seen timestamptz NOT NULL,
+    PRIMARY KEY (user_id, project, feature));
+CREATE TABLE IF NOT EXISTS outbox (
+    event_id bigint NOT NULL, to_addr text NOT NULL, subject text NOT NULL, body text NOT NULL,
+    sent_at timestamptz, error text, PRIMARY KEY (event_id, to_addr));
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash bytea PRIMARY KEY, user_id text NOT NULL, expires_at timestamptz NOT NULL);
 "#;
 
 /// The projected tables, in the order `rebuild` empties them.
-const PROJECTED: &[&str] = &["timeline", "features", "members", "users", "egm_meta"];
+/// Not projected: `sessions`; `activity` (measured minutes, not events); `outbox` (kept across
+/// rebuilds so a rebuild never mails anyone twice).
+const PROJECTED: &[&str] = &["timeline", "comments", "labels", "reviews", "approvals", "features", "members", "users", "egm_meta"];
 
 pub async fn connect(url: &str) -> anyhow::Result<Client> {
     let (client, conn) = tokio_postgres::connect(url, NoTls).await?;
@@ -73,13 +97,51 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
             let gate = Gate::new(hash);
             let doc = w.data["doc"].as_str().unwrap_or_default();
             c.execute(
-                "INSERT INTO features (project, slug, doc, gate, phase, doc_hash, created_id, updated_id, updated_at)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8) ON CONFLICT (project, slug) DO NOTHING",
-                &[&project, &feature, &doc, &serde_json::to_value(gate)?, &phase_name(&gate), &hash.to_string(), &id, &w.time],
+                "INSERT INTO features (project, slug, doc, gate, phase, doc_hash, created_id, updated_id, updated_at, author)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9) ON CONFLICT (project, slug) DO NOTHING",
+                &[&project, &feature, &doc, &serde_json::to_value(gate)?, &phase_name(&gate), &hash.to_string(), &id, &w.time, &w.actor],
             )
             .await?;
         }
+        ("comment.added", false) => {
+            c.execute(
+                "INSERT INTO comments (id, project, feature, target, author, body, at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING",
+                &[&id, &project, &feature, &w.data["target"].as_str().unwrap_or("doc"), &w.actor, &w.data["text"].as_str().unwrap_or_default(), &w.time],
+            )
+            .await?;
+            notify_author(c, id, project, feature, &w.actor, &format!("{} commented on {feature}", who(c, &w.actor).await?)).await?;
+        }
+        ("alarm.labelled", false) => {
+            let round = w.data["round"].as_i64().unwrap_or(0) as i32;
+            let alarm = w.data["alarm"].as_i64().unwrap_or(0) as i32;
+            c.execute(
+                "INSERT INTO labels (project, feature, round, alarm, label, kept, by_user, event_id, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                 ON CONFLICT (project, feature, round, alarm) DO UPDATE SET label=$5, kept=$6, by_user=$7, event_id=$8, at=$9",
+                &[&project, &feature, &round, &alarm, &w.data["label"].as_str().unwrap_or_default(), &w.data["kept"].as_bool().unwrap_or(false), &w.actor, &id, &w.time],
+            )
+            .await?;
+        }
+        ("review.submitted", false) => {
+            c.execute(
+                "INSERT INTO reviews (id, project, feature, reviewer, verdict, note, doc_hash, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING",
+                &[&id, &project, &feature, &w.actor, &w.data["verdict"].as_str().unwrap_or_default(), &w.data["note"].as_str().unwrap_or_default(), &w.data["doc_hash"].as_str().unwrap_or_default(), &w.time],
+            )
+            .await?;
+            let what = if w.data["verdict"] == "approve" { "approved" } else { "asked for changes to" };
+            notify_author(c, id, project, feature, &w.actor, &format!("{} {what} {feature}", who(c, &w.actor).await?)).await?;
+        }
+        ("merge.approved", false) => {
+            c.execute(
+                "INSERT INTO approvals (id, project, feature, approver, doc_hash, tier, at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING",
+                &[&id, &project, &feature, &w.actor, &w.data["doc_hash"].as_str().unwrap_or_default(), &w.data["tier"].as_str().unwrap_or_default(), &w.time],
+            )
+            .await?;
+            notify_author(c, id, project, feature, &w.actor, &format!("{} approved the merge of {feature}", who(c, &w.actor).await?)).await?;
+        }
         (kind, false) => {
+            if kind == "gate.verdict" && w.data["pass"] == true {
+                notify_reviewers(c, id, project, feature).await?;
+            }
             let Some(row) = c.query_opt("SELECT gate FROM features WHERE project=$1 AND slug=$2", &[&project, &feature]).await? else {
                 return Ok(());
             };
@@ -119,14 +181,47 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
         ("auth.signed-in", true) if project == SYSTEM => {
             let user = w.data["user"].as_str().unwrap_or_default();
             c.execute(
-                "INSERT INTO users (id, login, name, last_sign_in) VALUES ($1,$2,$3,$4)
-                 ON CONFLICT (id) DO UPDATE SET login=$2, name=$3, last_sign_in=$4",
-                &[&user, &w.data["login"].as_str().unwrap_or_default(), &w.data["name"].as_str().unwrap_or_default(), &w.time],
+                "INSERT INTO users (id, login, name, last_sign_in, email) VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (id) DO UPDATE SET login=$2, name=$3, last_sign_in=$4, email=$5",
+                &[&user, &w.data["login"].as_str().unwrap_or_default(), &w.data["name"].as_str().unwrap_or_default(), &w.time, &w.data["email"].as_str().unwrap_or_default()],
             )
             .await?;
         }
         _ => {}
     }
+    Ok(())
+}
+
+/// A person's login for mail text (their id when they never signed in).
+async fn who(c: &impl GenericClient, id: &str) -> anyhow::Result<String> {
+    Ok(c.query_opt("SELECT login FROM users WHERE id=$1", &[&id]).await?.map(|r| r.get(0)).unwrap_or_else(|| id.to_string()))
+}
+
+/// Mail the feature's author about an action by someone else (when the author has an email).
+async fn notify_author(c: &impl GenericClient, id: i64, project: &str, feature: &str, actor: &str, subject: &str) -> anyhow::Result<()> {
+    c.execute(
+        "INSERT INTO outbox (event_id, to_addr, subject, body)
+         SELECT $1, u.email, $4, $5 FROM features f JOIN users u ON u.id = f.author
+         WHERE f.project=$2 AND f.slug=$3 AND u.email <> '' AND f.author <> $6
+         ON CONFLICT (event_id, to_addr) DO NOTHING",
+        &[&id, &project, &feature, &subject, &format!("{subject}.\n\n{{url}}/p/{project}/f/{feature}\n"), &actor],
+    )
+    .await?;
+    Ok(())
+}
+
+/// A passed evidence gate: mail the project's reviewers and approvers, except the author.
+async fn notify_reviewers(c: &impl GenericClient, id: i64, project: &str, feature: &str) -> anyhow::Result<()> {
+    let subject = format!("{feature} is ready for review in {project}");
+    c.execute(
+        "INSERT INTO outbox (event_id, to_addr, subject, body)
+         SELECT $1, u.email, $4, $5 FROM members m JOIN users u ON u.id = m.user_id
+         WHERE m.project=$2 AND m.roles && ARRAY['reviewer','approver']::text[] AND u.email <> ''
+           AND m.user_id <> COALESCE((SELECT author FROM features WHERE project=$2 AND slug=$3), '')
+         ON CONFLICT (event_id, to_addr) DO NOTHING",
+        &[&id, &project, &feature, &subject, &format!("The evidence gate passed for {feature}.\n\n{{url}}/p/{project}/f/{feature}\n")],
+    )
+    .await?;
     Ok(())
 }
 
@@ -256,12 +351,151 @@ pub async fn user_login(c: &impl GenericClient, id: &str) -> anyhow::Result<Opti
 /// Write the users row a sign-in's `auth.signed-in` event projects to, at once, so the first
 /// page after sign-in shows the name without waiting for the projector. The event is already in
 /// Vesdb, so a rebuild writes the same row.
-pub async fn user_signed_in(c: &impl GenericClient, id: &str, login: &str, name: &str) -> anyhow::Result<()> {
+pub async fn user_signed_in(c: &impl GenericClient, id: &str, login: &str, name: &str, email: &str) -> anyhow::Result<()> {
     c.execute(
-        "INSERT INTO users (id, login, name, last_sign_in) VALUES ($1,$2,$3,'') ON CONFLICT (id) DO UPDATE SET login=$2, name=$3",
-        &[&id, &login, &name],
+        "INSERT INTO users (id, login, name, last_sign_in, email) VALUES ($1,$2,$3,'',$4) ON CONFLICT (id) DO UPDATE SET login=$2, name=$3, email=$4",
+        &[&id, &login, &name, &email],
     )
     .await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------- collaboration
+
+/// What the policy needs about a feature: its author, risk tier, and the merge evidence.
+#[derive(Debug, Clone, Default)]
+pub struct FeatureState {
+    pub author: String,
+    pub tier: Option<String>,
+    pub phase: String,
+    pub doc_hash: String,
+    pub merge: egm_core::policy::MergeState,
+    pub approved: bool,
+}
+
+/// A person, not the worker: ids look like `github:123` or `gitlab:5`.
+pub fn is_person(id: &str) -> bool {
+    id.split_once(':').is_some_and(|(p, n)| (p == "github" || p == "gitlab") && !n.is_empty())
+}
+
+pub async fn feature_state(c: &impl GenericClient, project: &str, slug: &str) -> anyhow::Result<Option<FeatureState>> {
+    let Some(f) = c.query_opt("SELECT author, phase, doc_hash FROM features WHERE project=$1 AND slug=$2", &[&project, &slug]).await? else {
+        return Ok(None);
+    };
+    let (author, phase, doc_hash): (String, String, String) = (f.get(0), f.get(1), f.get(2));
+    let gate = c
+        .query_opt("SELECT data FROM timeline WHERE project=$1 AND feature=$2 AND kind='gate.verdict' ORDER BY id DESC LIMIT 1", &[&project, &slug])
+        .await?
+        .map(|r| r.get::<_, Value>(0));
+    let tier = gate.as_ref().and_then(|g| g["tier"].as_str().map(String::from));
+    let gate_passed = gate.as_ref().is_some_and(|g| g["pass"] == true && g["doc_hash"].as_str() == Some(doc_hash.as_str()));
+    let reviewed = c
+        .query_opt("SELECT 1 FROM reviews WHERE project=$1 AND feature=$2 AND verdict='approve' AND doc_hash=$3 AND reviewer <> $4 LIMIT 1", &[&project, &slug, &doc_hash, &author])
+        .await?
+        .is_some();
+    let approved = c.query_opt("SELECT 1 FROM approvals WHERE project=$1 AND feature=$2 AND doc_hash=$3 LIMIT 1", &[&project, &slug, &doc_hash]).await?.is_some();
+    let merge = egm_core::policy::MergeState {
+        author_known: is_person(&author),
+        built: phase == "built" || phase == "hardened",
+        gate_passed,
+        reviewed_by_other: reviewed,
+    };
+    Ok(Some(FeatureState { author, tier, phase, doc_hash, merge, approved }))
+}
+
+pub async fn comments(c: &impl GenericClient, project: &str, slug: &str) -> anyhow::Result<Vec<(String, String, String, String)>> {
+    let rows = c
+        .query("SELECT c.target, COALESCE(u.login, c.author), c.body, c.at FROM comments c LEFT JOIN users u ON u.id=c.author WHERE c.project=$1 AND c.feature=$2 ORDER BY c.id", &[&project, &slug])
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+}
+
+/// `(round, alarm) -> (label, by)` for a feature.
+pub async fn labels(c: &impl GenericClient, project: &str, slug: &str) -> anyhow::Result<std::collections::HashMap<(i32, i32), (String, String)>> {
+    let rows = c
+        .query("SELECT l.round, l.alarm, l.label, COALESCE(u.login, l.by_user) FROM labels l LEFT JOIN users u ON u.id=l.by_user WHERE l.project=$1 AND l.feature=$2", &[&project, &slug])
+        .await?;
+    Ok(rows.iter().map(|r| ((r.get(0), r.get(1)), (r.get(2), r.get(3)))).collect())
+}
+
+pub async fn reviews(c: &impl GenericClient, project: &str, slug: &str) -> anyhow::Result<Vec<(String, String, String, String, String)>> {
+    let rows = c
+        .query("SELECT COALESCE(u.login, r.reviewer), r.verdict, r.note, r.doc_hash, r.at FROM reviews r LEFT JOIN users u ON u.id=r.reviewer WHERE r.project=$1 AND r.feature=$2 ORDER BY r.id", &[&project, &slug])
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4))).collect())
+}
+
+pub async fn approvals(c: &impl GenericClient, project: &str, slug: &str) -> anyhow::Result<Vec<(String, String, String, String)>> {
+    let rows = c
+        .query("SELECT COALESCE(u.login, a.approver), a.doc_hash, a.tier, a.at FROM approvals a LEFT JOIN users u ON u.id=a.approver WHERE a.project=$1 AND a.feature=$2 ORDER BY a.id", &[&project, &slug])
+        .await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+}
+
+/// Goldfish confusion over the latest label of each alarm: (tp, fp, fn, tn). Positive class: the
+/// alarm was real (labelled valid); predicted positive: the goldfish kept it. `EgmLabels.lean`.
+pub async fn confusion(c: &impl GenericClient, project: &str) -> anyhow::Result<(i64, i64, i64, i64)> {
+    let r = c
+        .query_one(
+            "SELECT count(*) FILTER (WHERE kept AND label='valid'), count(*) FILTER (WHERE kept AND label='noise'),
+                    count(*) FILTER (WHERE NOT kept AND label='valid'), count(*) FILTER (WHERE NOT kept AND label='noise')
+             FROM labels WHERE project=$1",
+            &[&project],
+        )
+        .await?;
+    Ok((r.get(0), r.get(1), r.get(2), r.get(3)))
+}
+
+/// Measured minutes: each authenticated view or action of a feature adds the gap since the
+/// person's previous one, capped at `GAP_CAP_MINUTES` (as egm-dsh counts human minutes: a longer
+/// gap is time away and counts as the cap).
+pub async fn touch(c: &impl GenericClient, user: &str, project: &str, slug: &str) -> anyhow::Result<()> {
+    c.execute(
+        "INSERT INTO activity (user_id, project, feature, minutes, last_seen) VALUES ($1,$2,$3,0,now())
+         ON CONFLICT (user_id, project, feature) DO UPDATE SET
+           minutes = activity.minutes + LEAST(EXTRACT(EPOCH FROM now() - activity.last_seen)::float8 / 60.0, $4),
+           last_seen = now()",
+        &[&user, &project, &slug, &egm_core::evidence::GAP_CAP_MINUTES],
+    )
+    .await?;
+    Ok(())
+}
+
+/// Minutes per feature, summed over people, with how many people.
+pub async fn minutes(c: &impl GenericClient, project: &str) -> anyhow::Result<Vec<(String, f64, i64)>> {
+    let rows = c.query("SELECT feature, sum(minutes), count(*) FROM activity WHERE project=$1 GROUP BY feature ORDER BY feature", &[&project]).await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2))).collect())
+}
+
+/// Features waiting for this person's review across `projects`: built, gate passed for the
+/// current doc, not approved yet, not written by them. Highest risk first.
+pub async fn inbox(c: &impl GenericClient, projects: &[String], user: &str) -> anyhow::Result<Vec<(String, String, String, String)>> {
+    let mut out = vec![];
+    for p in projects {
+        for f in features(c, p).await? {
+            let Some(st) = feature_state(c, p, &f.slug).await? else { continue };
+            if st.merge.built && st.merge.gate_passed && !st.approved && st.author != user {
+                out.push((p.clone(), f.slug.clone(), st.tier.clone().unwrap_or_else(|| "unknown".into()), f.updated_at.clone()));
+            }
+        }
+    }
+    let rank = |t: &str| match t {
+        "high" => 0,
+        "medium" => 1,
+        "low" => 2,
+        _ => 3,
+    };
+    out.sort_by(|a, b| rank(&a.2).cmp(&rank(&b.2)).then(a.3.cmp(&b.3)));
+    Ok(out)
+}
+
+pub async fn outbox_pending(c: &impl GenericClient) -> anyhow::Result<Vec<(i64, String, String, String)>> {
+    let rows = c.query("SELECT event_id, to_addr, subject, body FROM outbox WHERE sent_at IS NULL AND error IS NULL ORDER BY event_id LIMIT 50", &[]).await?;
+    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+}
+
+pub async fn outbox_done(c: &impl GenericClient, event_id: i64, to: &str, error: Option<String>) -> anyhow::Result<()> {
+    c.execute("UPDATE outbox SET sent_at = CASE WHEN $3::text IS NULL THEN now() END, error = $3 WHERE event_id=$1 AND to_addr=$2", &[&event_id, &to, &error]).await?;
     Ok(())
 }
 

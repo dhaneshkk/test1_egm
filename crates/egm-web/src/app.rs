@@ -8,6 +8,7 @@
 
 use crate::authz::{self, app};
 use crate::oauth::{self, Pending, Provider};
+use crate::collab::collab_panel;
 use crate::{checkout, db, Ah, SYSTEM};
 use egm_audit::AuditEvent;
 use egm_core::policy::Action;
@@ -36,6 +37,11 @@ pub fn router(state: crate::App) -> Router {
         .page(members)
         .page(audit_trail)
         .route(health)
+        .page(crate::collab::inbox)
+        .route(crate::collab::label)
+        .route(crate::collab::comment)
+        .route(crate::collab::review)
+        .route(crate::collab::approve)
         .with(state)
         .layer(CookieLayer::new())
         .build()
@@ -74,6 +80,7 @@ async fn root(cx: &Cx, slot: Slot<'_>) -> Result<impl View> {
                     <a href="/"><strong>"egm-team"</strong></a>
                     <span style="flex:1"></span>
                     if let Some(v) = &v {
+                        <a href="/inbox" id="inbox-link">"Review inbox"</a>
                         <span class="muted" id="viewer">(&v.login)</span>
                         <form method="POST" action="/sign-out" style="margin:0">
                             <button>"Sign out"</button>
@@ -220,12 +227,12 @@ async fn auth_callback(cx: &Cx) -> Result<SeeOther> {
         project: SYSTEM.into(),
         feature: String::new(),
         actor: who.id.clone(),
-        data: json!({"user": who.id, "login": who.login, "name": who.name, "provider": p.name()}),
+        data: json!({"user": who.id, "login": who.login, "name": who.name, "email": who.email, "provider": p.name()}),
     };
     let log = a.log.clone();
     let key = format!("web/{}", oauth::random_hex(16).ah()?);
     tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
-    db::user_signed_in(&*a.db, &who.id, &who.login, &who.name).await.ah()?;
+    db::user_signed_in(&*a.db, &who.id, &who.login, &who.name, &who.email).await.ah()?;
     let s = session::start(cx).await?;
     db::session_create(&*a.db, &s.token_hash[..], &who.id, s.expires_at).await.ah()?;
     a.refresh.notify_one();
@@ -319,7 +326,7 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
     let review_rows: Vec<(u32, String, usize, u64)> = reviews
         .iter()
         .map(|(n, r)| {
-            let alarms = r["alarms"].as_array().map(|a| a.iter().filter(|x| x["status"] == "kept").count()).unwrap_or(0);
+            let alarms = r["alarms"].as_array().map(|a| a.iter().filter(|x| x["kind"] != "note" && x["status"] != "dropped").count()).unwrap_or(0);
             (*n, r["verdict"].as_str().unwrap_or("?").to_string(), alarms, r["tokens"].as_u64().unwrap_or(0))
         })
         .collect();
@@ -378,6 +385,8 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
             </table>
         }
 
+        collab_panel(p: p, slug: slug)
+
         <h2>"Evidence"</h2>
         match passed {
             None => <p class="muted" id="evidence">"No evidence gate run yet."</p>,
@@ -429,6 +438,9 @@ pub fn when(t: &str) -> String {
     }
 }
 
+/// Below this many cases in either class an MCC is shown with a warning.
+pub const MIN_PER_CLASS: i64 = 29;
+
 /// MCC from a confusion matrix; `None` when a margin is empty.
 pub fn mcc(tp: f64, fp: f64, tn: f64, fn_: f64) -> Option<f64> {
     let d = ((tp + fp) * (tp + fn_) * (tn + fp) * (tn + fn_)).sqrt();
@@ -445,6 +457,16 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
     let events = entries(&c["events"]);
     let n = |k: &str, s: &str| c[k][s].as_i64().unwrap_or(0);
     let (gy, gn, py, pn) = (n("goldfish", "true"), n("goldfish", "false"), n("gates", "true"), n("gates", "false"));
+    let (tp, fp, fn_, tn) = db::confusion(&*app(cx).db, p).await.ah()?;
+    let labelled = tp + fp + fn_ + tn;
+    let score = mcc(tp as f64, fp as f64, tn as f64, fn_ as f64);
+    let (real, noise) = (tp + fn_, fp + tn);
+    let few = real < MIN_PER_CLASS || noise < MIN_PER_CLASS;
+    let mcc_text = match score {
+        Some(m) => format!("{m:.2}"),
+        None => "undefined".to_string(),
+    };
+    let minutes = db::minutes(&*app(cx).db, p).await.ah()?;
     Ok(view! {
         <h1>(p)" · metrics"</h1>
         tabs(project: p)
@@ -459,7 +481,28 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
             <tr><td>"Evidence gate"</td><td>(py)</td><td>(pn)</td></tr>
         </table>
         <h2>"MCC"</h2>
-        <p id="mcc">"Goldfish MCC needs reviewers' valid-or-noise labels on alarms, and gate MCC needs defects found after merge. Both arrive with collaboration (phase 3); until then there is nothing honest to score. MCC is shown with a warning below 29 cases per class."</p>
+        <p class="muted">"Goldfish MCC scores the goldfish against reviewers' labels: an alarm the goldfish kept is a predicted gap, an alarm a reviewer labelled real is an actual one. Notes are not scored. Gate MCC needs defects found after merge and comes with phase 5."</p>
+        if labelled == 0 {
+            <p id="mcc">"No alarms labelled yet, so there is nothing to score."</p>
+        } else {
+            <table id="mcc">
+                <tr><th></th><th>"Reviewer: real"</th><th>"Reviewer: noise"</th></tr>
+                <tr><td>"Goldfish kept"</td><td>(tp)</td><td>(fp)</td></tr>
+                <tr><td>"Goldfish dropped"</td><td>(fn_)</td><td>(tn)</td></tr>
+            </table>
+            <p>"Goldfish MCC: "<strong id="mcc-value">(mcc_text)</strong>" over "(labelled)" labelled alarm(s)."</p>
+            if few {
+                <p class="bad" id="mcc-warning">(format!("Warning: {real} real and {noise} noise labels. MCC is unreliable below {MIN_PER_CLASS} cases per class; treat this number as a sketch, not a measurement."))</p>
+            }
+        }
+        <h2>"Human minutes"</h2>
+        <p class="muted">"Measured from app activity: each view or action on a feature adds the time since the same person's previous one, capped at 30 minutes, the same way egm-dsh counts human minutes."</p>
+        if minutes.is_empty() { <p class="muted" id="minutes">"No activity recorded yet."</p> } else {
+            <table id="minutes">
+                <tr><th>"Feature"</th><th>"Minutes"</th><th>"People"</th></tr>
+                for (f, m, n) in &minutes { <tr><td>(f)</td><td>(format!("{m:.1}"))</td><td>(*n)</td></tr> }
+            </table>
+        }
         <h2>"Events"</h2>
         <table id="events">
             for (k, n) in &events { <tr><td>(k)</td><td>(*n)</td></tr> }

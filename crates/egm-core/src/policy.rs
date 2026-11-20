@@ -110,6 +110,59 @@ pub fn allowed(roles: &[Role], author: bool, tier: Tier, a: Action) -> Result<()
     Ok(())
 }
 
+/// What else must hold before a merge is approved, from the audit log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MergeState {
+    /// The feature's author is known (its `feature.created` was pushed with a person as actor).
+    pub author_known: bool,
+    /// Phase `built` or `hardened`.
+    pub built: bool,
+    /// The latest evidence gate verdict for the current doc passed.
+    pub gate_passed: bool,
+    /// Someone other than the author submitted an approving review of the current doc.
+    pub reviewed_by_other: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MergeDenial {
+    Policy(Denial),
+    AuthorUnknown,
+    NotBuilt,
+    GateNotPassed,
+    NoReview,
+}
+
+impl std::fmt::Display for MergeDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MergeDenial::Policy(d) => d.fmt(f),
+            MergeDenial::AuthorUnknown => f.write_str("the feature's author is not recorded, so separation of duties cannot be checked; push its events with --actor"),
+            MergeDenial::NotBuilt => f.write_str("the feature is not built"),
+            MergeDenial::GateNotPassed => f.write_str("the evidence gate has not passed for the current doc"),
+            MergeDenial::NoReview => f.write_str("no one but the author has approved the current doc in a review"),
+        }
+    }
+}
+
+/// Mirrors `mayApproveMerge` in `proofs/EgmPolicy.lean`: the role rules, then the evidence.
+pub fn may_approve_merge(roles: &[Role], author: bool, tier: Tier, s: &MergeState) -> Result<(), MergeDenial> {
+    allowed(roles, author, tier, Action::ApproveMerge).map_err(MergeDenial::Policy)?;
+    if !s.author_known {
+        return Err(MergeDenial::AuthorUnknown);
+    }
+    if !s.built {
+        return Err(MergeDenial::NotBuilt);
+    }
+    if !s.gate_passed {
+        return Err(MergeDenial::GateNotPassed);
+    }
+    if !s.reviewed_by_other {
+        return Err(MergeDenial::NoReview);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +207,36 @@ mod tests {
             }
         }
         assert_eq!(n, 64 * 2 * 3 * ACTIONS.len());
+    }
+
+    /// The four merge theorems of `EgmPolicy.lean`, over every role set, author, tier and
+    /// merge state (6,144 cases).
+    #[test]
+    fn merge_approval_facts_hold_in_every_case() {
+        let mut n = 0;
+        for rs in subsets() {
+            for author in [false, true] {
+                for t in TIERS {
+                    for bits in 0u8..16 {
+                        let s = MergeState { author_known: bits & 1 != 0, built: bits & 2 != 0, gate_passed: bits & 4 != 0, reviewed_by_other: bits & 8 != 0 };
+                        n += 1;
+                        let ok = may_approve_merge(&rs, author, t, &s).is_ok();
+                        if author {
+                            assert!(!ok, "merge_never_self");
+                        }
+                        if ok {
+                            assert!(s.gate_passed && s.built && s.author_known, "merge_needs_gate");
+                            assert!(s.reviewed_by_other, "merge_needs_other_review");
+                            if t == Tier::High {
+                                assert!(rs.contains(&Role::Approver), "merge_high_needs_approver");
+                            }
+                            assert!(allowed(&rs, author, t, Action::ApproveMerge).is_ok());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(n, 64 * 2 * 3 * 16);
     }
 
     #[test]
