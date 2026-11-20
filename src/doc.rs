@@ -40,7 +40,7 @@ pub fn guidance(section: &str) -> &'static str {
         "Technical plan" => "A jargon-light explanation of the components involved and how they fit together. Say how existing data, files and callers are affected by the change. Leave no design decision to the implementer: name data shapes, error handling and edge-case behavior.",
         "Alternatives considered" => "Every approach we discussed and rejected, one paragraph each, starting with the approach in bold and saying why it lost. A spec that proposes one path with no documented rejected options fails review.",
         "Implementation map" => "A bullet list of EVERY file to create or change, each formatted exactly as: - `relative/path` — reason. Paths are relative to the repository root. If the change needs more than three files, group the bullets under `### Phase 1: name`, `### Phase 2: name`, ..., where each phase leaves the code building and its tests passing.",
-        "Acceptance criteria" => "A bullet list. Each item states one observable behavior, then ends with `Check: ` and, in backticks, the one test that fails if the behavior breaks, as `path/to/test_file.py::TestClass::test_name` (or `path::test_name`). For an algorithmic property, use `Check: lean proofs/Name.lean#theorem_name`. Use `Check: manual — reason` only when nothing can be automated.",
+        "Acceptance criteria" => "A bullet list. Each item states one observable behavior, then ends with `Check: ` and, in backticks, the one test that fails if the behavior breaks, as `path/to/test_file.py::TestClass::test_name` (or `path::test_name`). For an algorithmic property, use `Check: lean proofs/Name.lean#theorem_name`. Use `Check: manual — reason` only when nothing can be automated. Optionally, start an item with an ID in brackets (`[AC1]`) and end it with `Risk: low|medium|high` and `Scope:` plus the backticked code it covers (`path/file.py` or `path/file.py::function`); a seeded bug that survives in the scope of a high-risk criterion fails the evidence gate.",
         "Verification" => "Required when the project sets a Verification checklist (`egm-dsh set-verification`): define every item on it, with concrete values. egm-dsh checks each item itself.",
         "Decisions" => "Written by `egm-dsh redraft`: each question a goldfish raised and how it was settled, by the repository (with the file and its exact words) or by a person. Keep earlier entries.",
         "Examples" => "Optional. One or more ```console blocks: lines starting with `$ ` are commands run from the repository root, and the lines after each are its exact expected output. They run as tests, so show only output the finished feature will really print.",
@@ -173,7 +173,10 @@ impl Doc {
             .filter_map(|l| l.trim_start().strip_prefix("- "))
             .map(|item| {
                 let check = item.find("Check:").map(|i| {
-                    let rest = item[i + 6..].trim();
+                    // the check ends where the optional `Risk:` or `Scope:` fields begin
+                    let rest = &item[i + 6..];
+                    let end = ["Risk:", "Scope:"].iter().filter_map(|l| rest.find(l)).min().unwrap_or(rest.len());
+                    let rest = rest[..end].trim();
                     first_backticked(rest).unwrap_or_else(|| rest.to_string())
                 });
                 Criterion { text: item.to_string(), check }
