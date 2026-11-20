@@ -1,0 +1,16 @@
+# The app, with a public certificate (HTTPS only; Caddy redirects HTTP).
+{$EGM_DOMAIN} {
+	reverse_proxy egm-team:8080
+}
+
+# Vesdb on the private network, over TLS from Caddy's internal CA. egm-team trusts only that CA
+# (vesdb_ca = "/caddy/caddy/pki/authorities/local/root.crt"). The upstreams are both Vesdb
+# servers; only the writer answers /health/writer, so writes go to it.
+vesdb.internal:8443 {
+	tls internal
+	reverse_proxy vesdb-a:3000 vesdb-b:3000 {
+		health_uri /health/writer
+		health_interval 1s
+		lb_try_duration 15s
+	}
+}

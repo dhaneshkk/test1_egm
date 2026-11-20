@@ -22,6 +22,16 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: cargo test --workspace --release --locked
 
+  audit:
+    # dependency audit (SOC 2 CC6.8, CC7.1): known vulnerabilities fail the build; reviewed
+    # exceptions live in deny.toml with a reason and a date to look again
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
   lean:
     runs-on: ubuntu-24.04
     steps:
@@ -81,6 +91,7 @@ jobs:
           pip install -q playwright && python3 -m playwright install --with-deps chromium   # egm-team: browser test on Postgres 16 (preinstalled on the runner)
           python3 tests/e2e/run_web_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb $D
           python3 tests/e2e/run_jobs_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb $D   # phase 4: egm-dsh run from the browser
+          python3 tests/e2e/run_host_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb /tmp/vesdb/target/release/vesdb-verify $D   # phase 5: GitHub, GitLab, SOC 2
           python3 bench/review_metrics.py --selftest
           python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
           python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2

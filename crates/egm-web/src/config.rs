@@ -184,6 +184,9 @@ impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Config> {
         let text = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
         let mut c: Config = toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        if let Ok(u) = std::env::var("EGM_DATABASE_URL") {
+            c.database_url = u; // keeps a database password out of the file
+        }
         c.vesdb_token = std::env::var("EGM_VESDB_TOKEN").map_err(|_| anyhow::anyhow!("set EGM_VESDB_TOKEN (Vesdb token with write and audit scopes)"))?;
         if let Some(g) = &mut c.github {
             g.client_secret = std::env::var("EGM_GITHUB_CLIENT_SECRET").map_err(|_| anyhow::anyhow!("set EGM_GITHUB_CLIENT_SECRET"))?;
