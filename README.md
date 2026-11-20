@@ -18,6 +18,22 @@ It is an independent project. Google publishes its own [Elephant-Goldfish Model 
 
 - **Right-sized models** — every role runs on its own model, reasoning effort and tool list. The default `balanced` preset gives the elephant and the builder DeepSeek V4 Pro and gives the goldfish and the reviewer Flash. `egm-dsh usage` shows what each role cost.
 
+- **A team web app** — `egm-team` lets developers, reviewers and approvers follow every feature in the browser: the board, the design doc and its revisions, goldfish reviews, evidence, metrics and the audit trail. People sign in with GitHub or GitLab, every page checks a Lean-proven policy first, and every change is recorded in [Vesdb](https://github.com/dhaneshkk/test1_vesdb), a tamper-evident audit log. The view is read-only for now; comments, approvals and running egm-dsh from the browser come next.
+
+**New here?** The [user guide](docs/USER_GUIDE.md) walks through each role step by step: developers on the command line, teammates in the web app, the admin who runs it, and the auditor who checks the record. This README explains how it all works.
+
+### What is in this repository
+
+| Path | What it is | Build |
+|---|---|---|
+| `src/main.rs` | `egm-dsh`, the command line | `cargo install --path .` (Rust 1.97+) |
+| `crates/egm-core` | Everything egm-dsh does, as a library; the access policy | library |
+| `crates/egm-audit` | `egm-audit`: events into Vesdb, replay, receipts and bundles | `cargo install --path crates/egm-audit` |
+| `crates/egm-web` | `egm-team`, the team web app (Topcoat, Postgres) | `cargo install --path crates/egm-web` (Rust 1.99+) |
+| `proofs/` | Lean 4 proofs of the gate, the policy, replay and the audit link | `lean proofs/<file>.lean` |
+| `tests/e2e/` | End-to-end suites on the real dsh binary with a scripted model | see [Guarantees](#guarantees-and-how-they-are-checked) |
+| `docs/USER_GUIDE.md` | The user guide | — |
+
 ### The whole flow
 
 ```plantuml
@@ -56,6 +72,8 @@ end
 cargo install --path .        # or: cargo build --release
 egm-dsh demo                      # offline: the whole loop on a bundled sample, in seconds
 ```
+
+`cargo build --workspace --release` builds every binary (`egm-dsh`, `egm-audit`, `egm-team`). For the team web app, see [egm-team](#egm-team-the-team-web-app-read-only-view) and the [user guide's admin part](docs/USER_GUIDE.md#part-3-running-egm-team).
 
 `egm-dsh demo` creates `./egm-dsh-demo`, a tiny Python note-taking CLI called `jot`, and adds a feature to it: *tag notes and list notes by tag*. The first goldfish review fails because the design never says what happens to notes saved before tags existed; you answer, the elephant redrafts, a fresh goldfish passes, and only then does the agent build. Run the same script against real DeepSeek Harness with:
 
@@ -566,7 +584,7 @@ The adoption rule (`proofs/EgmTune.lean`) requires all four:
 
 Adoption copies the setup into `.egm-dsh/setups/<fingerprint>/` and sets `goldfish_harness`. Delete that config line to roll back. Each review records the fingerprint of the setup it used.
 
-**What a setup cannot reach.** egm-dsh loads it through `src/tuning.rs`, which accepts only prompt text: the four guidance files and the four stage personas, each at most 8,000 characters. Any other file, such as a script, plugin, skill or config, refuses the whole setup. The JSON answer schemas, grounding, the verifier, egm-dsh's own alarms, the pass rule, the gate, frozen tests and step limits stay in code. Lean proves applying a setup leaves them unchanged.
+**What a setup cannot reach.** egm-dsh loads it through `crates/egm-core/src/tuning.rs`, which accepts only prompt text: the four guidance files and the four stage personas, each at most 8,000 characters. Any other file, such as a script, plugin, skill or config, refuses the whole setup. The JSON answer schemas, grounding, the verifier, egm-dsh's own alarms, the pass rule, the gate, frozen tests and step limits stay in code. Lean proves applying a setup leaves them unchanged.
 
 ```sh
 pip install -e path/to/harness2              # Python 3.12+
@@ -889,6 +907,81 @@ Lean: `namespace EgmEvidence` (`gate_passes_iff`, `one_failing_check_fails`, `no
 
 **What this doesn't do yet.** The live `gh` fetch in `review_metrics.py` is untested here, because the workspace's GitHub token was rejected; the arithmetic is checked on fixtures. Mutation operators are text-level and language-agnostic, so they miss language-specific bugs and can produce equivalent mutants that no test could catch. Keep the minimum below 100%. Routing and tiering are suggestions; who reviews is the team's decision.
 
+## A library for egm-team: events and the audit log
+
+egm-dsh is now a Cargo workspace, the first step of the team web app (egm-team):
+
+| Crate | What it is |
+|---|---|
+| `crates/egm-core` | Everything egm-dsh does, as a library. Everything it says goes through one event sink (`events.rs`): terminal lines, and domain events for each change (`feature.created`, `doc.revised`, `goldfish.verdict`, `decision.recorded`, `criteria.frozen`, `build.completed`, `review.completed`, `gate.verdict`). Domain events carry hashes, counts and verdicts, never source code or document text. `policy.rs` says who may do what in egm-team |
+| `egm-dsh` (the root package) | The CLI, now a thin layer over `egm-core`. Output is byte for byte what it was |
+| `crates/egm-audit` | The `AuditLog` trait and its Vesdb client, replay of a feature's gate from its events, and the `egm-audit` command |
+
+**Events from the CLI.** `--events FILE` (any command) also appends every event to `FILE` as JSON lines; the terminal output does not change. egm-team's worker reads the same events in-process through the sink.
+
+```sh
+egm-dsh --events events.jsonl fix gap-ids "..." --files jot/cli.py --check tests/test_jot.py::GapTest::test_add_after_gap
+egm-audit replay events.jsonl                     # gap-ids  hardened  <doc hash>: the gate egm-dsh saved
+VESDB_URL=http://vesdb-a:3000,http://vesdb-b:3000 VESDB_TOKEN=... \
+  egm-audit push events.jsonl --project jot --job build-17   # one Vesdb event each, under /egm/jot/gap-ids
+egm-audit replay-vesdb --project jot              # the same phase, rebuilt from Vesdb alone
+egm-audit receipt 0                               # signed receipt and inclusion proof
+egm-audit bundle 0 1 2                            # offline evidence bundle; check it with vesdb-verify
+```
+
+**Vesdb.** The audit log is [Vesdb](https://github.com/dhaneshkk/test1_vesdb), run highly available as merged on its master: two servers on one bucket, one writer and one warm standby. `egm-audit` sends an `Idempotency-Key` with every write (`egm/<job>/<n>`) and retries a `503` or a dropped connection with the same key, moving to the next URL when several are given, so a failover neither loses nor duplicates an event. Events are stored as `io.egm.<kind>` under the subject `/egm/<project>/<feature>`, with the actor beside the data.
+
+**Who may do what** (`policy.rs`, mirrored by `proofs/EgmPolicy.lean`): developers start features and run jobs; reviewers and approvers review, label alarms and approve merges; only an approver approves a high-risk merge; admins change members and settings; auditors read and export; the worker records what a job did. Nobody reviews or approves a feature they wrote, and taking a role away never grants an action.
+
+## egm-team: the team web app (read-only view)
+
+`crates/egm-web` builds `egm-team`, a [Topcoat](https://github.com/tokio-rs/topcoat) web app (pinned to 0.12.1; it needs Rust 1.99 or newer). This first version is read-only: people sign in and see what egm-dsh and the audit log hold. Running egm-dsh from the browser, comments and approvals come next.
+
+| Page | Shows |
+|---|---|
+| `/` | The projects you are a member of |
+| `/p/<project>` | The feature board, one column per gate phase |
+| `/p/<project>/f/<feature>` | The design doc, its git revisions, every goldfish review, the evidence gate's checks, risk and seeded-bug score, and the feature's audit history |
+| `/p/<project>/f/<feature>/rev/<commit>` | The doc as it was at that commit |
+| `/p/<project>/metrics` | Features by phase, goldfish and gate verdicts (MCC once reviewers label alarms) |
+| `/p/<project>/members` | Who holds which roles |
+| `/p/<project>/audit` | Every audit event of the project |
+
+![A feature in egm-team: the design doc, its revisions, goldfish reviews, evidence and history](docs/screenshots/04-feature-page.png)
+
+More screens in the [user guide](docs/USER_GUIDE.md#screens).
+
+**Where the data comes from.** Postgres holds views rebuilt from the Vesdb audit log (`egm-team rebuild` drops and replays them); words people read (docs, review findings, evidence) come from the project's checkout, read-only. The log, not the database, is the record.
+
+**Sign-in.** GitHub or GitLab OAuth (authorization code; GitLab with PKCE). egm-team asks only for the user's identity and keeps the user's id, login and name. Sessions are `__Host-` cookies, HttpOnly and SameSite=Lax, stored hashed. Every sign-in is written to Vesdb before the session starts; with Vesdb down, nobody signs in.
+
+**The policy check.** Every page and route starts with `authz::require` (or `authz::signed_in` for the projects list), which applies `policy.rs`. A refusal is a 403 and a `policy.refused` event in Vesdb. `crates/egm-web/tests/policy_lint.rs` reads the source and fails the build if a handler does not start with the check; Topcoat's shards bypass page guards, so the test covers `#[shard]` and `#[procedure]` too.
+
+```toml
+# egm-team.toml; secrets come from EGM_VESDB_TOKEN, EGM_GITHUB_CLIENT_SECRET, EGM_GITLAB_CLIENT_SECRET
+listen = "127.0.0.1:8080"
+public_url = "https://egm-team.example"
+database_url = "host=/run/postgresql dbname=egm"
+vesdb_url = "http://vesdb-a:3000,http://vesdb-b:3000"
+admins = ["github:1234"]
+
+[[project]]
+name = "jot"
+checkout = "/srv/egm/jot"
+host = "github"
+
+[github]
+client_id = "Iv1.abc"
+[gitlab]
+client_id = "abc"
+base_url = "https://gitlab.com"
+```
+
+```sh
+egm-team grant --project jot --user github:5678 --roles developer   # recorded in Vesdb as member.role-changed
+egm-team serve
+```
+
 ## How egm-dsh drives DeepSeek Harness
 
 egm launches the headless profile once per turn and reads its JSON event stream:
@@ -948,11 +1041,15 @@ The default launcher is `npx -y @deepseek-ai/dsh@latest`; set `"dsh_command"` in
 | Budgets never go negative: activities charged plus budget left equals the starting budget, exactly, for every run and every counter (and the same for model calls) | `budget_accounting`, `activities_within_budget`, `sessions_within_budget`, `rstep_budget` (natural numbers, and a step needing a zero counter is refused) |
 | The Rust run layer matches the Lean model | `cargo test` (`run`): all 17,057,656 run traces of length 6 (18,186,225 steps) keep the invariant, drop the rank and account exactly, and the gate moves only through the gate's own step; full reachability from three budgets (5,212 states) terminates within the initial rank with no live session in any stuck state; rank drop is also asserted at runtime on every begin, open and finish |
 | No orphaned dsh process on Ctrl-C, SIGTERM or a SIGKILL of egm; a crashed run's sessions are cleaned up by the next command; over-budget steps are refused with the fix named | `tests/e2e/run_sessions_e2e.py`: real dsh, real signals, a stalling fake model, process groups checked through `/proc` |
+| Replaying a feature's audit events gives exactly the gate egm-dsh kept, for every start and every trace; nothing egm-dsh emits is a transition the gate refuses; a replayed gate is safe | `proofs/EgmGate.lean`, `namespace EgmReplay`: `replay_emitted`, `emitted_never_refused`, `replay_safe`; `cargo test` (`egm-audit` replay through the events egm-core really emits); `run_audit_e2e.py` (real dsh, real Vesdb: replay from the events file and from Vesdb equals the saved gate) |
+| An author never reviews or approves their own feature; only an approver approves a high-risk merge; the worker never reviews, approves or changes roles; adding a role never takes an action away | `proofs/EgmPolicy.lean`: `author_never_approves`, `high_risk_needs_approver`, `worker_limited`, `monotone`; `cargo test` (`policy`: the same four facts over all 4,224 cases) |
+| An auditor's export of a feature holds exactly the events the app replays for it; a feature's history only grows at the end; a retried write under one idempotency key is recorded once | `proofs/VesdbLink.lean`: `export_exact`, `history_prefix`, `retry_once` (Vesdb's own `receipt_binding`, `no_fork`, `ack_durable`, `idempotent` are proved in its repository); `run_audit_e2e.py`: pushing twice writes nothing new, a killed writer loses and doubles nothing, `vesdb-verify` fails a bucket with one changed byte |
+| Every egm-team page and route checks the policy before it reads anything; an outsider gets 403 on every project page and each refusal is recorded; sign-ins are recorded before the session starts | `crates/egm-web/tests/policy_lint.rs` (reads every handler; also proves it catches a missing check); `run_web_e2e.py` (Chromium, Postgres 16, Vesdb, fake GitHub and GitLab with PKCE checked: 29 checks) |
 | The Rust gate matches the Lean model | `cargo test`: all 117,649 event traces up to length 6; the invariant is also asserted on every save |
 | egm works with real DeepSeek Harness | `python3 tests/e2e/run_dsh_e2e.py target/release/egm-dsh --preset P dsh` runs the real `dsh` binary against a scripted fake model endpoint and checks: session resume, read-only enforcement, write access only for build, the gate, and a hardened result |
 
 ```sh
-cargo test
+cargo test --workspace
 for f in proofs/*.lean; do lean "$f"; done
 for p in balanced economy quality; do python3 tests/e2e/run_dsh_e2e.py target/release/egm-dsh --preset $p "$(which dsh)"; done
 python3 tests/e2e/run_sessions_e2e.py "$PWD/target/release/egm-dsh" "$(which dsh)"
@@ -960,6 +1057,8 @@ python3 tests/e2e/run_escalate_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_room_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_loop_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_provider_e2e.py target/release/egm-dsh "$(which dsh)"
+python3 tests/e2e/run_web_e2e.py target/release/egm-dsh target/release/egm-audit target/release/egm-team "$VESDB/target/release/vesdb" "$(which dsh)"   # needs Postgres 16 and Playwright
+python3 tests/e2e/run_audit_e2e.py target/release/egm-dsh target/release/egm-audit "$VESDB/target/release/vesdb" "$VESDB/target/release/vesdb-verify" "$(which dsh)"   # VESDB: a build of dhaneshkk/test1_vesdb
 ```
 
 ## Measuring whether the goldfish helps
@@ -999,4 +1098,8 @@ Cost: about $0.08 per doc and repeat at peak rates. The test split with 3 repeat
 - The elephant's view is a cost control, not a sandbox: a read outside it (by absolute path, or by shell where the preset allows one) is warned about, not refused. Each elephant turn copies the view afresh, which costs time on a very large repository; a scope keeps it small.
 - The word limit is a request to the model; egm-dsh reports overruns but does not cut text. It is the one that should read the project, and it may also read `.egm-dsh/`.
 - The termination proof covers egm's own steps. A human can keep editing the doc forever; each edit only reopens design.
+- egm-team is read-only so far: people read, they do not yet comment, label alarms, approve or run egm-dsh from the browser. Until the worker exists, events reach the app by `egm-dsh --events` plus `egm-audit push`, and docs by keeping the team's checkout current.
+- egm-team is built on Topcoat 0.12, which its authors call experimental. It is pinned exactly and kept in one crate so an upgrade, or a move to axum and htmx, touches only the UI.
+- Vesdb is young (0.1) and has not been independently audited. An auditor may ask for such a review before relying on it.
+- Sign-in proves who someone is on GitHub or GitLab, nothing more; access comes only from roles granted in egm-team. If Vesdb is unreachable, sign-in stops and refusals are logged locally instead of in the audit log.
 - The drift check compares file hashes against the build; it does not understand code. Handover assumes the later step's design accounts for what the earlier step built in that file; the later step's goldfish only knows that if its doc links the earlier doc.

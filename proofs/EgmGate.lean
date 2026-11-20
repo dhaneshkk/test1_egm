@@ -1568,3 +1568,118 @@ example : mutationOk 5 10 60 = false := by decide
 example : tier [0, 2, 1] = 2 := by decide
 
 end EgmEvidence
+
+/-! ## Replaying the audit log (egm-team)
+
+egm-core emits a domain event for each gate transition that changed the gate
+(`events::gate_event`, called from `Activity::finish` and `Project::sync`), and
+egm-team writes those events to Vesdb. `egm_audit::replay::gate` folds them back
+through the gate, refusing (returning `Err`) on a transition the gate refuses.
+
+Proved here, for every start gate and every finite trace:
+* `replay_emitted`: replaying what was emitted gives exactly the gate egm-core
+  kept, so the phase the app shows is always rebuildable from the log alone;
+* `emitted_never_refused`: nothing egm-core emits is a transition the gate
+  refuses, so a refused transition in a log proves the log was not written by
+  egm-core;
+* `replay_safe`: a replayed gate satisfies the gate invariant `Safe`.
+-/
+namespace EgmReplay
+
+/-- When Rust's `Gate::step` returns `Err` (the four `Refusal`s). -/
+def refused (g : Gate) : Event → Bool
+  | .editDoc _ => false
+  | .goldfish _ => match g.phase with
+    | .built | .hardened => true
+    | _ => false
+  | .build => match g.phase with
+    | .ready => false
+    | _ => true
+  | .review _ => match g.phase with
+    | .built | .hardened => false
+    | _ => true
+
+/-- A refused event leaves the gate unchanged (Rust keeps the old gate). -/
+theorem refused_unchanged (g : Gate) (e : Event) (h : refused g e = true) : step g e = g := by
+  rcases g with ⟨p, d, pa⟩
+  cases e <;> cases p <;> simp_all [refused, step]
+
+/-- `Gate::step` as a partial function. -/
+def stepOpt (g : Gate) (e : Event) : Option Gate :=
+  if refused g e then none else some (step g e)
+
+/-- `egm_audit::replay::gate`, after `feature.created` gave the start gate. -/
+def replay : Option Gate → List Event → Option Gate
+  | o, [] => o
+  | none, _ :: _ => none
+  | some g, e :: es => replay (stepOpt g e) es
+
+/-- What egm-core does with a trace: the gate it keeps, and the events it emits
+    (only transitions that changed the gate). -/
+def emit : Gate → List Event → Gate × List Event
+  | g, [] => (g, [])
+  | g, e :: es =>
+    let r := emit (step g e) es
+    (r.1, if step g e = g then r.2 else e :: r.2)
+
+theorem emit_gate (g : Gate) (es : List Event) : (emit g es).1 = run g es := by
+  induction es generalizing g with
+  | nil => rfl
+  | cons e es ih => simp [emit, run, ih]
+
+theorem replay_emitted (g : Gate) (es : List Event) :
+    replay (some g) (emit g es).2 = some (emit g es).1 := by
+  induction es generalizing g with
+  | nil => rfl
+  | cons e es ih =>
+    by_cases hc : step g e = g
+    · have := ih (step g e)
+      simp only [emit, hc, if_true] at this ⊢
+      exact this
+    · have hr : refused g e = false := by
+        cases h : refused g e
+        · rfl
+        · exact absurd (refused_unchanged g e h) hc
+      simp only [emit, hc, if_false, replay, stepOpt, hr]
+      exact ih (step g e)
+
+/-- Each emitted event, at the gate it was emitted from, is not refused. -/
+def noneRefused : Gate → List Event → Prop
+  | _, [] => True
+  | g, e :: es => refused g e = false ∧ noneRefused (step g e) es
+
+theorem emitted_never_refused (g : Gate) (es : List Event) : noneRefused g (emit g es).2 := by
+  induction es generalizing g with
+  | nil => trivial
+  | cons e es ih =>
+    by_cases hc : step g e = g
+    · have := ih (step g e)
+      simp only [emit, hc, if_true] at this ⊢
+      exact this
+    · have hr : refused g e = false := by
+        cases h : refused g e
+        · rfl
+        · exact absurd (refused_unchanged g e h) hc
+      simp only [emit, hc, if_false, noneRefused]
+      exact ⟨hr, ih (step g e)⟩
+
+/-- Replay never builds an unsafe gate from a safe start. -/
+theorem replay_safe (o : Option Gate) (es : List Event) (g : Gate)
+    (ho : ∀ g0, o = some g0 → Safe g0) (h : replay o es = some g) : Safe g := by
+  induction es generalizing o with
+  | nil => exact ho g (by simpa [replay] using h)
+  | cons e es ih =>
+    cases o with
+    | none => simp [replay] at h
+    | some g0 =>
+      apply ih (stepOpt g0 e) _ h
+      intro g1 h1
+      simp only [stepOpt] at h1
+      split at h1
+      · cases h1
+      · cases h1; exact step_inv g0 e (ho g0 rfl)
+
+example : replay (some (init 1)) [.build] = none := by decide
+example : (emit (init 1) [.goldfish true, .goldfish true, .build]).2 = [.goldfish true, .build] := rfl
+
+end EgmReplay

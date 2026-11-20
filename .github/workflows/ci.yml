@@ -18,9 +18,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: sudo apt-get update && sudo apt-get install -y bubblewrap
-      - run: cargo test --release --locked
+      - run: cargo test --workspace --release --locked
 
   lean:
     runs-on: ubuntu-24.04
@@ -52,16 +52,16 @@ jobs:
         run: |
           curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
           echo "LEAN_BIN=$PWD/lean-4.31.0-linux/bin/lean" >> "$GITHUB_ENV"
-      - run: cargo build --release --locked
+      - run: cargo build --workspace --release --locked
       - name: End-to-end tests (real dsh, scripted model)
         run: |
           set -e
-          E=target/release/egm-dsh; D=$(command -v dsh)
+          R=$PWD/target/release; E=$R/egm-dsh; D=$(command -v dsh)   # absolute: the tests run egm-dsh from inside their project folders
           for p in balanced economy quality; do for r in dsh builtin; do python3 tests/e2e/run_dsh_e2e.py $E --preset $p --reviewers $r $D; done; done
           python3 tests/e2e/run_steps_e2e.py $E $D
           python3 tests/e2e/run_spec_e2e.py $E $D
           python3 tests/e2e/run_safety_e2e.py $E $D
-          python3 tests/e2e/run_sessions_e2e.py $PWD/$E $D
+          python3 tests/e2e/run_sessions_e2e.py $E $D
           python3 tests/e2e/run_escalate_e2e.py $E $D
           python3 tests/e2e/run_room_e2e.py $E $D
           python3 tests/e2e/run_loop_e2e.py $E $D
@@ -75,6 +75,11 @@ jobs:
           python3 tests/e2e/run_vote_e2e.py $E $D
           pip install --break-system-packages -q coverage || true   # coverage of changed lines (optional)
           python3 tests/e2e/run_gate_e2e.py $E $D
+          git clone -q --depth 1 https://github.com/dhaneshkk/test1_vesdb /tmp/vesdb   # audit log: egm-team's Vesdb, two servers on one bucket
+          cargo build --release -q --manifest-path /tmp/vesdb/Cargo.toml -p vesdb-server -p vesdb-verify
+          python3 tests/e2e/run_audit_e2e.py $E $R/egm-audit /tmp/vesdb/target/release/vesdb /tmp/vesdb/target/release/vesdb-verify $D
+          pip install -q playwright && python3 -m playwright install --with-deps chromium   # egm-team: browser test on Postgres 16 (preinstalled on the runner)
+          python3 tests/e2e/run_web_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb $D
           python3 bench/review_metrics.py --selftest
           python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
           python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2
@@ -82,7 +87,7 @@ jobs:
         run: |
           git clone -q https://github.com/google/elephant-goldfish-model /tmp/egm-upstream
           git -C /tmp/egm-upstream checkout -q 3d0b34821ce88ad328b0c9bf0e06d7eb5f1cd669
-          python3 tests/e2e/run_compare_flags_e2e.py target/release/egm-dsh /tmp/egm-upstream $(command -v dsh)
+          python3 tests/e2e/run_compare_flags_e2e.py $PWD/target/release/egm-dsh /tmp/egm-upstream $(command -v dsh)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -91,7 +96,7 @@ jobs:
           git clone -q https://github.com/google-research/harness2 /tmp/harness2
           git -C /tmp/harness2 checkout -q 1cfe254e8d25b15f37048c3730134686abe60335
           python -m pip install -q -e /tmp/harness2
-          python tests/e2e/run_tune_e2e.py target/release/egm-dsh
+          python tests/e2e/run_tune_e2e.py $PWD/target/release/egm-dsh
 
   smoke-real:
     runs-on: ubuntu-24.04
@@ -109,7 +114,7 @@ jobs:
       - run: npm install -g @deepseek-ai/dsh@latest
       - run: cargo build --release --locked
       - name: Real DeepSeek models, budget-capped (skips without the secret)
-        run: python3 tests/smoke_real.py target/release/egm-dsh --preset economy --max-usd 1.0 --out smoke_real.json --dsh-command dsh
+        run: python3 tests/smoke_real.py $PWD/target/release/egm-dsh --preset economy --max-usd 1.0 --out smoke_real.json --dsh-command dsh
       - uses: actions/upload-artifact@v4
         if: always()
         with:

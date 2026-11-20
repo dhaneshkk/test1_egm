@@ -7,40 +7,10 @@
 //! doc revision a goldfish has not passed. Each role can run on its own model
 //! and reasoning effort; `egm-dsh usage` shows what each one cost.
 
-mod agent;
-mod alarm;
-mod commands;
-mod cost;
-mod criteria;
-mod demo;
-mod diagram;
-mod doc;
-mod escalate;
-mod estimate;
-mod evidence;
-mod gate;
-mod executor;
-mod fix;
-mod goldfish;
-mod metrics;
-mod official;
-mod phase;
-mod lock;
-mod project;
-mod run;
-mod safety;
-mod scope;
-mod session;
-mod spec;
-mod stage;
-mod steps;
-mod triage;
-mod tuning;
-mod verify;
-mod vcs;
-mod ui;
 
 use std::path::PathBuf;
+
+use egm_core::{agent, commands, criteria, demo, diagram, evidence, gate, lock, project, safety, session, triage, tuning, verify, ui};
 
 use clap::{Parser, Subcommand};
 
@@ -50,6 +20,10 @@ use project::{AgentKind, Config, GoldfishMode, Preset, Project};
 #[derive(Parser)]
 #[command(name = "egm-dsh", version, about = "Elephant-Goldfish design workflow with DeepSeek Harness as the coding agent")]
 struct Cli {
+    /// Also append every event (terminal lines and domain events such as `gate.verdict`) as
+    /// JSON lines to this file. The team app's worker reads it.
+    #[arg(long, global = true, value_name = "FILE")]
+    events: Option<PathBuf>,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -523,7 +497,17 @@ enum Cmd {
 }
 
 fn main() {
-    let result = run(Cli::parse());
+    let cli = Cli::parse();
+    if let Some(path) = &cli.events {
+        match egm_core::events::jsonl_sink(path) {
+            Ok(sink) => egm_core::events::set_sink(Some(sink)),
+            Err(e) => {
+                ui::warn(&format!("cannot open {}: {e}", path.display()));
+                std::process::exit(1);
+            }
+        }
+    }
+    let result = run(cli);
     // An interrupt may have landed while a non-agent command (a test, git) ran: its exit code wins.
     session::halt_if_interrupted();
     if let Err(e) = result {
@@ -767,7 +751,7 @@ fn run_cmd(mut p: Project, cmd: Cmd) -> anyhow::Result<()> {
                 Cmd::Risk { feature } => gate::risk_cmd(&p, &feature),
                 Cmd::LogTime { feature, minutes, what } => gate::log_time(&p, &feature, minutes, &what),
                 Cmd::CiTemplate => {
-                    print!("{}", gate::ci_template());
+                    ui::out(gate::ci_template().trim_end_matches('\n').to_string());
                     Ok(())
                 }
                 Cmd::SetGate { mutation_min, mutants, mutant_timeout, coverage_cmd, coverage_file, risk_path } => {

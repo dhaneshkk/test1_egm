@@ -12,14 +12,14 @@ use crate::goldfish::Stage;
 
 pub const UPSTREAM: &str = "google/elephant-goldfish-model@3d0b348";
 
-const COMPREHENSION: &str = include_str!("../vendor/egm-official/agents/comprehension.md");
-const DESIGN_CRITIC: &str = include_str!("../vendor/egm-official/agents/design_critic.md");
-const READINESS: &str = include_str!("../vendor/egm-official/agents/implementation_readiness.md");
-const ZOOM_OUT: &str = include_str!("../vendor/egm-official/agents/zoom_out.md");
+const COMPREHENSION: &str = include_str!("../../../vendor/egm-official/agents/comprehension.md");
+const DESIGN_CRITIC: &str = include_str!("../../../vendor/egm-official/agents/design_critic.md");
+const READINESS: &str = include_str!("../../../vendor/egm-official/agents/implementation_readiness.md");
+const ZOOM_OUT: &str = include_str!("../../../vendor/egm-official/agents/zoom_out.md");
 
-pub const FEATURE_SPEC_STANDARD: &str = include_str!("../vendor/egm-official/resources/document_standards/feature-spec-standard.md");
-pub const READINESS_STANDARD: &str = include_str!("../vendor/egm-official/resources/document_standards/implementation-readiness-standard.md");
-pub const ZOOM_OUT_STANDARD: &str = include_str!("../vendor/egm-official/resources/document_standards/zoom-out-standard.md");
+pub const FEATURE_SPEC_STANDARD: &str = include_str!("../../../vendor/egm-official/resources/document_standards/feature-spec-standard.md");
+pub const READINESS_STANDARD: &str = include_str!("../../../vendor/egm-official/resources/document_standards/implementation-readiness-standard.md");
+pub const ZOOM_OUT_STANDARD: &str = include_str!("../../../vendor/egm-official/resources/document_standards/zoom-out-standard.md");
 
 /// The persona file and the standard a stage is judged against, if any.
 fn sources(stage: Stage) -> Option<(&'static str, Option<&'static str>)> {

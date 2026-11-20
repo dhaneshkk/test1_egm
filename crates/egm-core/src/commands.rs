@@ -1206,7 +1206,7 @@ pub fn diagrams(files: &[std::path::PathBuf], checker: &crate::diagram::Checker,
             }
             bad |= !errs.is_empty();
             if json_out {
-                println!("{}", json!({"file": f, "diagram": k + 1, "line": b.line, "section": b.section, "ok": errs.is_empty(), "problems": errs, "plantuml_error": tool}));
+                crate::ui::out(format!("{}", json!({"file": f, "diagram": k + 1, "line": b.line, "section": b.section, "ok": errs.is_empty(), "problems": errs, "plantuml_error": tool})));
             } else if errs.is_empty() {
                 ui::block(&format!("✔ {}:{} diagram {}{}", f.display(), b.line, k + 1, tool.map(|t| format!(" (structure only: {t})")).unwrap_or_default()));
             } else {
@@ -1339,11 +1339,11 @@ fn alarm_precision(p: &Project) -> anyhow::Result<()> {
         return Ok(());
     }
     ui::egm("alarms that held up, per goldfish model (verified runs only)");
-    println!("{:<20} {:>9} {:>14} {:>14} {:>10}", "model", "confirmed", "dropped:quote", "dropped:check", "held up");
+    crate::ui::out(format!("{:<20} {:>9} {:>14} {:>14} {:>10}", "model", "confirmed", "dropped:quote", "dropped:check", "held up"));
     for (model, (c, g, v)) in per {
         let judged = c + g + v;
         let share = if judged == 0 { "-".to_string() } else { format!("{:.0}%", 100.0 * c as f64 / judged as f64) };
-        println!("{model:<20} {c:>9} {g:>14} {v:>14} {share:>10}");
+        crate::ui::out(format!("{model:<20} {c:>9} {g:>14} {v:>14} {share:>10}"));
     }
     Ok(())
 }
@@ -1388,7 +1388,7 @@ pub fn usage(p: &Project, feature: Option<&str>) -> anyhow::Result<()> {
     let mut keys: Vec<_> = rows.keys().cloned().collect();
     keys.sort_by_key(|(r, m)| (order(r), m.clone()));
 
-    println!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", "role", "model", "reqs", "cache-hit", "miss", "output", "cost peak");
+    crate::ui::out(format!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", "role", "model", "reqs", "cache-hit", "miss", "output", "cost peak"));
     let mut total = Usage::default();
     let mut dollars = 0.0;
     let mut unpriced = Vec::new();
@@ -1406,9 +1406,9 @@ pub fn usage(p: &Project, feature: Option<&str>) -> anyhow::Result<()> {
                 "?".into()
             }
         };
-        println!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", key.0, key.1, u.requests, u.cache_hit, u.cache_miss, u.output, cost);
+        crate::ui::out(format!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", key.0, key.1, u.requests, u.cache_hit, u.cache_miss, u.output, cost));
     }
-    println!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", "TOTAL", "", total.requests, total.cache_hit, total.cache_miss, total.output, format!("${dollars:.4}"));
+    crate::ui::out(format!("{:<18} {:<18} {:>5} {:>10} {:>9} {:>9} {:>10}", "TOTAL", "", total.requests, total.cache_hit, total.cache_miss, total.output, format!("${dollars:.4}")));
     let input = total.cache_hit + total.cache_miss;
     if input > 0 {
         ui::egm(&format!("{:.0}% of input tokens were cache hits; off-peak hours cost half: ${:.4}", 100.0 * total.cache_hit as f64 / input as f64, dollars / 2.0));
@@ -1430,7 +1430,7 @@ pub fn usage(p: &Project, feature: Option<&str>) -> anyhow::Result<()> {
 }
 
 pub fn roles(p: &Project) -> anyhow::Result<()> {
-    println!("{:<18} {:<44} used by", "role", "agent");
+    crate::ui::out(format!("{:<18} {:<44} used by", "role", "agent"));
     let used = |r: RoleName| match r {
         RoleName::Elephant => "egm-dsh elephant, egm-dsh draft",
         RoleName::Goldfish => if p.config.goldfish_mode == GoldfishMode::Combined { "egm-dsh goldfish (all 4 stages, one session)" } else { "egm-dsh goldfish: comprehension, readiness, invariants" },
@@ -1440,7 +1440,7 @@ pub fn roles(p: &Project) -> anyhow::Result<()> {
         RoleName::Reviewer => "egm-dsh review",
     };
     for r in RoleName::ALL {
-        println!("{:<18} {:<44} {}", r.as_str(), p.agent_for(r).name(), used(r));
+        crate::ui::out(format!("{:<18} {:<44} {}", r.as_str(), p.agent_for(r).name(), used(r)));
     }
     Ok(())
 }
@@ -1456,7 +1456,7 @@ pub fn status(p: &Project) -> anyhow::Result<()> {
         p.save_feature(f)?;
     }
     // Steps in dependency order, so the table reads as the chain.
-    println!("{:<18} {:<10} {:>6} {:>8} {:<10} {:<8} {:<18} design doc", "step", "phase", "build", "goldfish", "first", "label", "after");
+    crate::ui::out(format!("{:<18} {:<10} {:>6} {:>8} {:<10} {:<8} {:<18} design doc", "step", "phase", "build", "goldfish", "first", "label", "after"));
     for f in crate::steps::chain_order(&features) {
         let phases = p.doc(f).map(|d| d.implementation_phases().len()).unwrap_or(0);
         let done = if f.built_doc_hash.is_some() && matches!(f.gate.phase, crate::phase::Phase::Built | crate::phase::Phase::Hardened) {
@@ -1468,7 +1468,7 @@ pub fn status(p: &Project) -> anyhow::Result<()> {
         };
         let waiting = crate::steps::unbuilt_deps(f, &features);
         let after = if f.depends_on.is_empty() { "-".to_string() } else { f.depends_on.join(",") };
-        println!(
+        crate::ui::out(format!(
             "{:<18} {:<10} {:>6} {:>8} {:<10} {:<8} {:<18} {}{}",
             f.slug,
             format!("{:?}", f.gate.phase).to_lowercase(),
@@ -1479,7 +1479,7 @@ pub fn status(p: &Project) -> anyhow::Result<()> {
             after,
             f.doc,
             if waiting.is_empty() { String::new() } else { format!("  (waits for {})", waiting.join(", ")) }
-        );
+        ));
     }
     Ok(())
 }
@@ -1487,7 +1487,7 @@ pub fn status(p: &Project) -> anyhow::Result<()> {
 pub fn show(p: &Project, slug: &str) -> anyhow::Result<()> {
     let f = p.load_feature(slug)?;
     let d: Doc = p.doc(&f)?;
-    println!("{}", d.text);
+    crate::ui::out(d.text.to_string());
     Ok(())
 }
 
@@ -1734,6 +1734,11 @@ fn tests_with(p: &Project, slug: &str, write: bool, review: bool) -> anyhow::Res
     }
     let (n_tests, n_lean, n_ex) = (frozen.test_files.len(), frozen.lean_files.len(), frozen.examples.len());
     act.finish(None)?;
+    crate::events::emit("criteria.frozen", slug, serde_json::json!({
+        "doc_hash": feature.gate.doc_hash.to_string(),
+        "criteria": frozen.criteria.iter().map(|c| serde_json::json!({"check": c.check, "file_hash": c.file_hash, "red": c.red})).collect::<Vec<_>>(),
+        "examples": frozen.examples.len(),
+    }));
     feature.spec = Some(frozen);
     p.save_feature(&feature)?;
     ui::ok(&format!("spec frozen: {n_tests} test file(s), {n_lean} Lean file(s), {n_ex} example(s); every check is red now and the build may not change them"));
@@ -1902,12 +1907,12 @@ pub fn budget(p: &Project, only: Option<&str>) -> anyhow::Result<()> {
         Some(s) => vec![p.load_feature(s)?.slug],
         None => p.features()?.into_iter().map(|f| f.slug).collect(),
     };
-    println!("{:<18} {:>9} {:>9} {:>9} {:>9} {:>11}", "feature", "goldfish", "redraft", "builds", "reviews", "model calls");
+    crate::ui::out(format!("{:<18} {:>9} {:>9} {:>9} {:>9} {:>11}", "feature", "goldfish", "redraft", "builds", "reviews", "model calls"));
     for slug in features {
         let s = crate::session::load_spent(&dir, &slug);
         let l = p.config.limits_for(&slug);
         let cell = |used: u32, limit: u32| format!("{used}/{limit}");
-        println!(
+        crate::ui::out(format!(
             "{:<18} {:>9} {:>9} {:>9} {:>9} {:>11}",
             slug,
             cell(s.goldfish_rounds, l.goldfish_rounds),
@@ -1915,7 +1920,7 @@ pub fn budget(p: &Project, only: Option<&str>) -> anyhow::Result<()> {
             cell(s.build_attempts, l.build_attempts),
             cell(s.reviews, l.reviews),
             cell(s.model_calls, l.model_calls)
-        );
+        ));
     }
     ui::egm("each activity and agent session is checked against these before it starts; raise one with `egm-dsh set-budget --<limit> N [--feature F]`");
     Ok(())

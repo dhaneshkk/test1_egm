@@ -297,6 +297,7 @@ pub fn decide(rec: &mut Record, id: usize, key: Option<&str>, other: Option<&str
         (None, None) => anyhow::bail!("give an option key or --other \"your answer\""),
     };
     let text = choice.text.clone();
+    crate::events::emit("decision.recorded", &rec.slug, serde_json::json!({"item": id, "choice": choice.key, "doc_hash": rec.doc_hash.to_string()}));
     item.choice = Some(choice);
     item.status = Status::Decided;
     Ok(text)

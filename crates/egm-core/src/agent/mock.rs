@@ -241,15 +241,15 @@ impl Mock {
             anyhow::bail!("the mock agent can only build the bundled `jot` sample; set \"agent\": \"dsh\" in .egm-dsh/config.json for real projects");
         }
         for (rel, text) in [
-            ("jot/cli.py", include_str!("../../sample/after/jot/cli.py")),
-            ("tests/test_tags.py", include_str!("../../sample/after/tests/test_tags.py")),
+            ("jot/cli.py", include_str!("../../../../sample/after/jot/cli.py")),
+            ("tests/test_tags.py", include_str!("../../../../sample/after/tests/test_tags.py")),
         ] {
             ui::tool("write", rel);
             std::fs::write(self.root.join(rel), text)?;
         }
         ui::tool("bash", "python3 -m unittest discover -s tests -t .");
         let text = "Implemented tags as described: `add --tag` (repeatable), `list --tag`, `filter_by_tag`, and tests in `tests/test_tags.py`. Notes without a `tags` key load unchanged.\n\n{\"assumptions\": [{\"decision\": \"render shows tags in brackets after the text\", \"section\": \"Technical plan\", \"quote\": \"\", \"blocking\": false}]}".to_string();
-        let read = include_str!("../../sample/before/jot/cli.py").len() + include_str!("../../sample/after/jot/cli.py").len() * 2;
+        let read = include_str!("../../../../sample/before/jot/cli.py").len() + include_str!("../../../../sample/after/jot/cli.py").len() * 2;
         let usage = self.usage(prompt, read, &text, 3);
         Ok(Reply { text, session_id: None, tool_calls: 3, usage, touched: vec![] })
     }
@@ -260,9 +260,9 @@ impl Mock {
             anyhow::bail!("the mock agent can only write tests for the bundled `jot` sample");
         }
         ui::tool("write", "tests/test_tags.py");
-        std::fs::write(self.root.join("tests/test_tags.py"), include_str!("../../sample/after/tests/test_tags.py"))?;
+        std::fs::write(self.root.join("tests/test_tags.py"), include_str!("../../../../sample/after/tests/test_tags.py"))?;
         let text = "Wrote tests/test_tags.py: one test per acceptance criterion. They fail until tags exist.".to_string();
-        let usage = self.usage(prompt, include_str!("../../sample/before/jot/cli.py").len(), &text, 2);
+        let usage = self.usage(prompt, include_str!("../../../../sample/before/jot/cli.py").len(), &text, 2);
         Ok(Reply { text, session_id: None, tool_calls: 2, usage, touched: vec![] })
     }
 

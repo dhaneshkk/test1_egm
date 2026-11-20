@@ -11,9 +11,9 @@ use crate::ui;
 
 const SAMPLE: [(&str, &str); 5] = [
     ("jot/__init__.py", ""),
-    ("jot/cli.py", include_str!("../sample/before/jot/cli.py")),
+    ("jot/cli.py", include_str!("../../../sample/before/jot/cli.py")),
     ("tests/__init__.py", ""),
-    ("tests/test_jot.py", include_str!("../sample/before/tests/test_jot.py")),
+    ("tests/test_jot.py", include_str!("../../../sample/before/tests/test_jot.py")),
     ("README.md", "# jot\n\nA tiny command-line notebook: `python3 -m jot.cli add \"text\"`, `python3 -m jot.cli list`.\nNotes live in `notes.json`. Tests: `python3 -m unittest discover -s tests -t .`\n"),
 ];
 
@@ -87,7 +87,7 @@ pub fn run(dir: &Path, agent: AgentKind, preset: Preset, dsh_command: Option<Vec
     ui::banner("9 · What it cost");
     commands::usage(&p, None)?;
 
-    println!();
+    crate::ui::out("");
     ui::ok(&format!("done. Explore it: cd {} && egm-dsh status && egm-dsh show {slug}", dir.display()));
     Ok(())
 }

@@ -1,0 +1,21 @@
+[package]
+name = "egm-core"
+version = "0.1.0"
+edition = "2024"
+description = "egm-dsh's workflow as a library: projects, features, the Lean-proven gate, goldfish reviews, frozen tests, build and evidence"
+license = "Apache-2.0"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
+libc = "0.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "3.5.0", features = ["json"] }
+# Rust port of PlantUML (MIT; its graphviz-pure dependency is EPL-2.0): the built-in diagram syntax check.
+# Pinned exactly: the crate is young and its API is unstable until 1.0.
+plantuml-core = { version = "=0.5.4", optional = true }
+
+[features]
+default = ["plantuml-core"]
