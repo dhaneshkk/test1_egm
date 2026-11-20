@@ -160,43 +160,75 @@ pub fn apply(text: &str, m: &Mutant) -> String {
     s
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MutationResult {
     pub tried: usize,
+    /// Seeded bugs a check failed on. A timeout is not counted here.
     pub killed: usize,
     /// Mutants available before sampling.
     pub available: usize,
+    /// Seeded bugs whose checks ran past the timeout: neither caught nor survived,
+    /// and left out of the score (`EgmEvidence.timeout_never_counts`).
     pub timed_out: usize,
     /// The mutants no test caught: where a reviewer should look.
     pub survivors: Vec<Mutant>,
+    /// Seconds the unmutated checks took with a warm build cache.
+    #[serde(default)]
+    pub baseline_secs: Option<f64>,
+    /// Why no seeded bug could be judged (the unmutated checks fail or are too slow).
+    #[serde(default)]
+    pub problem: Option<String>,
 }
 
 impl MutationResult {
-    /// killed / tried, or None when nothing could be mutated.
+    /// Seeded bugs with a verdict: caught or survived. Timeouts are not judged.
+    pub fn judged(&self) -> usize {
+        self.tried - self.timed_out
+    }
+
+    /// killed / judged, or None when no seeded bug was judged.
     pub fn score(&self) -> Option<f64> {
-        (self.tried > 0).then(|| self.killed as f64 / self.tried as f64)
+        (self.judged() > 0).then(|| self.killed as f64 / self.judged() as f64)
+    }
+
+    /// The gate's mutation check: no problem, and `mutation_ok` over the judged bugs.
+    pub fn passes(&self, min_percent: u32) -> bool {
+        self.problem.is_none() && mutation_ok(self.killed, self.judged(), min_percent)
     }
 }
 
-/// `EgmEvidence.mutation_ok`: killed / tried ≥ min, in integer arithmetic (min is
-/// given in percent). Nothing tried never passes.
+/// How long one seeded bug may run: the configured timeout, or three times the
+/// unmutated checks' time when that is longer, so a slow suite is not read as a hang.
+pub fn mutant_timeout(configured: Duration, baseline: Duration) -> Duration {
+    configured.max(baseline * 3)
+}
+
+/// `EgmEvidence.mutation_ok`: killed / judged ≥ min, in integer arithmetic (min is
+/// given in percent). Nothing judged never passes. Callers pass the judged count
+/// (caught + survived), never one that includes timeouts.
 pub fn mutation_ok(killed: usize, tried: usize, min_percent: u32) -> bool {
     tried > 0 && killed * 100 >= tried * min_percent as usize
 }
 
 /// Run each command in a scratch copy of `root` with `overrides` written in place.
 /// Ok(true) when every command succeeds, Ok(false) when one fails, Err on a timeout.
-pub fn passes_in_copy(safety: &crate::safety::Safety, root: &Path, overrides: &[(String, String)], cmds: &[Vec<String>], timeout: Duration) -> anyhow::Result<Result<bool, ()>> {
+/// With `cache`, the commands share that build cache (`CARGO_TARGET_DIR`), writable in the sandbox.
+pub fn passes_in_copy(safety: &crate::safety::Safety, root: &Path, overrides: &[(String, String)], cmds: &[Vec<String>], timeout: Duration, cache: Option<&Path>) -> anyhow::Result<Result<bool, ()>> {
     let mode = crate::safety::effective(safety)?;
     let dir = crate::safety::scratch_copy(root, "mutant", &[])?;
     for (f, text) in overrides {
         std::fs::write(dir.join(f), text)?;
     }
-    let env = crate::safety::allowed_env(safety);
+    let mut env = crate::safety::allowed_env(safety);
+    let extra: Vec<&Path> = cache.into_iter().collect();
+    if let Some(c) = cache {
+        std::fs::create_dir_all(c)?;
+        env.push(("CARGO_TARGET_DIR".into(), c.to_string_lossy().to_string()));
+    }
     let mut verdict = Ok(true);
     for cmd in cmds {
         let Some((prog, args)) = cmd.split_first() else { continue };
-        let mut child = crate::safety::wrap(mode, &env, &dir, prog, args)
+        let mut child = crate::safety::wrap_rw(mode, &env, &dir, &extra, prog, args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
@@ -466,6 +498,80 @@ pub fn human_minutes(events: &[Event], feature: &str) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn result(killed: usize, survived: usize, timed_out: usize) -> MutationResult {
+        MutationResult { tried: killed + survived + timed_out, killed, timed_out, available: killed + survived + timed_out, ..Default::default() }
+    }
+
+    #[test]
+    fn a_timeout_is_not_a_catch() {
+        // every seeded bug timed out: the old rule counted 30/30 caught and passed
+        let all_timed_out = result(0, 0, 30);
+        assert_eq!(all_timed_out.score(), None);
+        assert!(!all_timed_out.passes(60));
+        assert!(!all_timed_out.passes(0), "nothing judged never passes, whatever the minimum");
+        // timeouts leave the score: 6 caught, 2 survived, 2 timed out is 6/8
+        let m = result(6, 2, 2);
+        assert_eq!(m.judged(), 8);
+        assert_eq!(m.score(), Some(0.75));
+        assert!(m.passes(60) && !m.passes(80));
+        // a timeout never turns a failing score into a passing one
+        assert!(!result(4, 4, 0).passes(60) && !result(4, 4, 7).passes(60));
+    }
+
+    #[test]
+    fn judged_rule_matches_lean() {
+        // EgmEvidence.judgedOk: the verdict depends on caught and survived only
+        for k in 0..6 {
+            for sv in 0..6 {
+                for o in 0..4 {
+                    for min in [0, 50, 60, 100] {
+                        let lean = k + sv > 0 && (k + sv) * min <= k * 100;
+                        assert_eq!(result(k, sv, o).passes(min as u32), lean, "k={k} s={sv} o={o} min={min}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_problem_never_passes() {
+        let m = MutationResult { problem: Some("too slow".into()), ..result(10, 0, 0) };
+        assert!(!m.passes(0));
+    }
+
+    #[test]
+    fn mutant_timeout_follows_a_slow_baseline() {
+        let s = Duration::from_secs;
+        assert_eq!(mutant_timeout(s(60), s(10)), s(60));
+        assert_eq!(mutant_timeout(s(60), s(30)), s(90));
+    }
+
+    #[test]
+    fn seeded_bug_runs_share_a_writable_build_cache_and_time_out() {
+        use crate::safety::{Safety, SandboxKind};
+        let root = crate::safety::scratch_dir("cache-test-root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        let cache = crate::safety::scratch_dir("cache-test-target");
+        let mut kinds = vec![SandboxKind::None];
+        if crate::safety::bwrap_works() {
+            kinds.push(SandboxKind::Bwrap);
+        }
+        for kind in kinds {
+            let safety = Safety { sandbox: kind, ..Safety::default() };
+            let touch = vec!["sh".to_string(), "-c".to_string(), "test -n \"$CARGO_TARGET_DIR\" && touch \"$CARGO_TARGET_DIR/warm\"".to_string()];
+            let r = passes_in_copy(&safety, &root, &[], &[touch], Duration::from_secs(30), Some(&cache)).unwrap();
+            assert_eq!(r, Ok(true), "{kind:?}: the cache is set and writable");
+            assert!(cache.join("warm").exists(), "{kind:?}: the write lands in the shared cache, outside the scratch copy");
+            std::fs::remove_file(cache.join("warm")).unwrap();
+            let slow = vec!["sh".to_string(), "-c".to_string(), "sleep 5".to_string()];
+            let r = passes_in_copy(&safety, &root, &[], &[slow], Duration::from_millis(200), Some(&cache)).unwrap();
+            assert_eq!(r, Err(()), "{kind:?}: past the timeout is Err, never a pass");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&cache);
+    }
 
     #[test]
     fn mutants_flip_operators_outside_strings_and_bump_integers() {

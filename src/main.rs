@@ -398,6 +398,10 @@ enum Cmd {
         /// At most this many seeded bugs per feature (default 30).
         #[arg(long)]
         mutants: Option<usize>,
+        /// Seconds one seeded bug's checks may run (default 60). The gate raises it to three
+        /// times the unmutated checks' time when that is longer. A timeout is never counted as caught.
+        #[arg(long)]
+        mutant_timeout: Option<u64>,
         /// Command that runs the tests with coverage and writes an lcov file; quote it as one argument.
         #[arg(long)]
         coverage_cmd: Option<String>,
@@ -761,13 +765,17 @@ fn run_cmd(mut p: Project, cmd: Cmd) -> anyhow::Result<()> {
                     print!("{}", gate::ci_template());
                     Ok(())
                 }
-                Cmd::SetGate { mutation_min, mutants, coverage_cmd, coverage_file, risk_path } => {
+                Cmd::SetGate { mutation_min, mutants, mutant_timeout, coverage_cmd, coverage_file, risk_path } => {
                     if let Some(m) = mutation_min {
                         anyhow::ensure!(m <= 100, "--mutation-min is a percentage");
                         p.config.gate.mutation_min = m;
                     }
                     if let Some(n) = mutants {
                         p.config.gate.mutants = n;
+                    }
+                    if let Some(t) = mutant_timeout {
+                        anyhow::ensure!(t > 0, "--mutant-timeout is in seconds and must be positive");
+                        p.config.gate.mutant_timeout_secs = t;
                     }
                     if let Some(c) = coverage_cmd {
                         p.config.gate.coverage_cmd = if c.trim().is_empty() { vec![] } else { vec!["sh".into(), "-c".into(), c] };
@@ -778,7 +786,7 @@ fn run_cmd(mut p: Project, cmd: Cmd) -> anyhow::Result<()> {
                     p.config.gate.risk_paths.extend(risk_path);
                     save_config(&p)?;
                     let g = &p.config.gate;
-                    ui::egm(&format!("evidence gate: catch at least {}% of up to {} seeded bugs; coverage: {}; risk paths: {}", g.mutation_min, g.mutants,
+                    ui::egm(&format!("evidence gate: catch at least {}% of up to {} seeded bugs ({} s each); coverage: {}; risk paths: {}", g.mutation_min, g.mutants, g.mutant_timeout_secs,
                         if g.coverage_cmd.is_empty() { "not measured".to_string() } else { g.coverage_cmd.last().cloned().unwrap_or_default() },
                         if g.risk_paths.is_empty() { "none".to_string() } else { g.risk_paths.join(", ") }));
                     Ok(())

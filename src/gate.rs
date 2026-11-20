@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,11 @@ fn frozen_tests(f: &Feature) -> BTreeSet<String> {
     f.spec.as_ref().map(|s| s.test_files.keys().cloned().collect()).unwrap_or_default()
 }
 
+/// ", N timed out (not counted)" when any seeded bug ran past the timeout.
+fn timeouts_note(m: &MutationResult) -> String {
+    if m.timed_out > 0 { format!(", {} timed out (not counted)", m.timed_out) } else { String::new() }
+}
+
 /// The commands whose failure kills a mutant: each frozen test, then acceptance.
 fn kill_commands(p: &Project, f: &Feature) -> Vec<Vec<String>> {
     let mut cmds: Vec<Vec<String>> = Vec::new();
@@ -108,21 +113,57 @@ pub fn mutation(p: &Project, f: &Feature, changed: &BTreeMap<String, BTreeSet<us
     if cmds.is_empty() || mutants.is_empty() {
         return Ok(r);
     }
-    let timeout = Duration::from_secs(p.config.gate.mutant_timeout_secs);
+    let configured = Duration::from_secs(p.config.gate.mutant_timeout_secs);
+    let cache = crate::safety::mutant_cache_dir(&p.root);
+    // Warm the shared build cache first, with a generous limit: a cold build is not a hang.
+    let warm = configured.max(Duration::from_secs(60)) * 10;
+    match evidence::passes_in_copy(&p.config.safety, &p.root, &[], &cmds, warm, Some(&cache))? {
+        Ok(true) => {}
+        Ok(false) => {
+            r.problem = Some("the frozen tests or the acceptance command fail with no seeded bug, so no seeded bug can be judged".into());
+            return Ok(r);
+        }
+        Err(()) => {
+            r.problem = Some(format!("the unmutated checks did not finish in {} s, even allowing for a cold build", warm.as_secs()));
+            return Ok(r);
+        }
+    }
+    // Then time the unmutated checks with the warm cache: the baseline for the timeout.
+    let start = Instant::now();
+    match evidence::passes_in_copy(&p.config.safety, &p.root, &[], &cmds, configured, Some(&cache))? {
+        Ok(true) => r.baseline_secs = Some(start.elapsed().as_secs_f64()),
+        Ok(false) => {
+            r.problem = Some("the frozen tests or the acceptance command fail on a second run with no seeded bug (flaky checks?), so no seeded bug can be judged".into());
+            return Ok(r);
+        }
+        Err(()) => {
+            r.problem = Some(format!(
+                "the unmutated checks take longer than the seeded-bug timeout ({} s) even with a warm build cache: raise it with `egm-dsh set-gate --mutant-timeout SECS`, or make the acceptance command faster",
+                configured.as_secs()
+            ));
+            return Ok(r);
+        }
+    }
+    let timeout = evidence::mutant_timeout(configured, start.elapsed());
+    if verbose {
+        ui::egm(&format!("unmutated checks: {:.1} s; each seeded bug may run {} s", r.baseline_secs.unwrap_or(0.0), timeout.as_secs()));
+    }
     for (k, m) in mutants.iter().enumerate() {
         let text = evidence::apply(&files[&m.file], m);
-        let verdict = evidence::passes_in_copy(&p.config.safety, &p.root, &[(m.file.clone(), text)], &cmds, timeout)?;
+        let verdict = evidence::passes_in_copy(&p.config.safety, &p.root, &[(m.file.clone(), text)], &cmds, timeout, Some(&cache))?;
         r.tried += 1;
         match verdict {
             Ok(true) => r.survivors.push(m.clone()),
             Ok(false) => r.killed += 1,
-            Err(()) => {
-                r.killed += 1;
-                r.timed_out += 1;
-            }
+            // a timeout is not a catch: it is reported apart and left out of the score
+            Err(()) => r.timed_out += 1,
         }
         if verbose {
-            let mark = if matches!(verdict, Ok(true)) { "survived" } else { "caught" };
+            let mark = match verdict {
+                Ok(true) => "survived",
+                Ok(false) => "caught",
+                Err(()) => "timed out (not counted)",
+            };
             ui::egm(&format!("seeded bug {}/{}: {}:{} {} — {mark}", k + 1, mutants.len(), m.file, m.line, m.op));
         }
     }
@@ -265,12 +306,15 @@ pub fn check(p: &Project, slug: &str, with_mutation: bool, verbose: bool) -> any
     if with_mutation {
         let m = mutation(p, &f, &changed, verbose)?;
         let min = p.config.gate.mutation_min;
-        let ok = evidence::mutation_ok(m.killed, m.tried, min);
-        let detail = match m.score() {
-            None if m.available == 0 => "no mutable lines in the change".to_string(),
-            None => "no tests to run against the seeded bugs".to_string(),
-            Some(s) => format!("caught {}/{} seeded bugs ({:.0}%; minimum {min}%){}", m.killed, m.tried, s * 100.0,
-                if m.available > m.tried { format!(", sampled from {}", m.available) } else { String::new() }),
+        let ok = m.passes(min);
+        let detail = match (&m.problem, m.score()) {
+            (Some(why), _) => why.clone(),
+            (None, None) if m.available == 0 => "no mutable lines in the change".to_string(),
+            (None, None) if m.timed_out > 0 => format!("all {} seeded bugs timed out, so none could be judged", m.timed_out),
+            (None, None) => "no tests to run against the seeded bugs".to_string(),
+            (None, Some(s)) => format!("caught {}/{} seeded bugs ({:.0}%; minimum {min}%){}{}", m.killed, m.judged(), s * 100.0,
+                if m.available > m.tried { format!(", sampled from {}", m.available) } else { String::new() },
+                timeouts_note(&m)),
         };
         // a change with nothing to mutate (only data or docs) is not a failure
         let ok = ok || (m.available == 0 && built);
@@ -421,14 +465,22 @@ pub fn mutate(p: &Project, slug: &str) -> anyhow::Result<bool> {
     }
     let m = mutation(p, &f, &changed, true)?;
     let min = p.config.gate.mutation_min;
+    if let Some(why) = &m.problem {
+        ui::warn(why);
+        return Ok(false);
+    }
     match m.score() {
+        None if m.timed_out > 0 => {
+            ui::warn(&format!("all {} seeded bugs timed out, so none could be judged", m.timed_out));
+            Ok(false)
+        }
         None => {
             ui::warn("nothing to measure: no mutable changed lines, or no frozen tests or acceptance command to run");
             Ok(false)
         }
         Some(s) => {
-            let ok = evidence::mutation_ok(m.killed, m.tried, min);
-            let msg = format!("caught {}/{} seeded bugs ({:.0}%; minimum {min}%){}", m.killed, m.tried, s * 100.0, if m.timed_out > 0 { format!(", {} by timeout", m.timed_out) } else { String::new() });
+            let ok = m.passes(min);
+            let msg = format!("caught {}/{} seeded bugs ({:.0}%; minimum {min}%){}", m.killed, m.judged(), s * 100.0, timeouts_note(&m));
             if ok {
                 ui::ok(&msg);
             } else {
@@ -472,7 +524,14 @@ pub fn render(rec: &Record, title: &str) -> String {
         None => s += "Coverage of changed lines: not measured (`egm-dsh set-gate --coverage-cmd …`).\n",
     }
     if let Some(m) = &rec.mutation {
-        s += &format!("\n### Seeded bugs\n\n{} of {} small bugs seeded in the changed lines made a test fail.\n", m.killed, m.tried);
+        if let Some(why) = &m.problem {
+            s += &format!("\n### Seeded bugs\n\nNot measured: {why}.\n");
+        } else {
+            s += &format!("\n### Seeded bugs\n\n{} of {} small bugs seeded in the changed lines made a test fail.\n", m.killed, m.judged());
+            if m.timed_out > 0 {
+                s += &format!("{} more ran past the timeout; a timeout is not counted as caught.\n", m.timed_out);
+            }
+        }
         if !m.survivors.is_empty() {
             s += "\n**No test caught these — each marks behaviour the tests do not pin down:**\n\n";
             for x in m.survivors.iter().take(15) {
