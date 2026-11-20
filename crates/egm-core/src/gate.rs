@@ -441,7 +441,7 @@ pub fn gate(p: &Project, slugs: &[String], all: bool, with_mutation: bool) -> an
             "pass": rec.passed,
             "doc_hash": rec.doc_hash.to_string(),
             "checks": rec.checks.iter().map(|c| serde_json::json!({"name": c.name, "ok": c.ok})).collect::<Vec<_>>(),
-            "mutation": rec.mutation.as_ref().map(|m| serde_json::json!({"killed": m.killed, "tried": m.tried})),
+            "mutation": rec.mutation.as_ref().map(|m| serde_json::json!({"killed": m.killed, "tried": m.tried, "timed_out": m.timed_out})),
             "tier": rec.tier,
         }));
         print_checks(&rec);

@@ -334,7 +334,13 @@ async fn feature_page(cx: &Cx) -> Result<impl View> {
     let tier = evidence.as_ref().and_then(|e| e["tier"].as_str().map(String::from)).unwrap_or_else(|| "not assessed".into());
     let mutation = evidence.as_ref().and_then(|e| {
         let m = &e["mutation"];
-        Some(format!("{} of {} seeded bugs caught", m["killed"].as_u64()?, m["tried"].as_u64()?))
+        let (killed, tried, timed_out) = (m["killed"].as_u64()?, m["tried"].as_u64()?, m["timed_out"].as_u64().unwrap_or(0));
+        let judged = tried.saturating_sub(timed_out);
+        Some(if timed_out > 0 {
+            format!("{killed} of {judged} seeded bugs caught ({timed_out} timed out, not counted)")
+        } else {
+            format!("{killed} of {tried} seeded bugs caught")
+        })
     });
     Ok(view! {
         <p><a href=(format!("/p/{p}"))>(p)</a>" / "(slug)</p>
