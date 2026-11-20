@@ -37,6 +37,12 @@ pub struct Record {
     pub churn: Churn,
     /// Per criterion: text, check, red before the build, passes now.
     pub criteria: Vec<(String, String, String, String)>,
+    /// Criteria with a scope: the surviving seeded bugs and uncovered changed lines in it.
+    #[serde(default)]
+    pub criteria_results: Vec<crate::criteria::CriterionResult>,
+    /// Surviving seeded bugs outside every criterion's scope.
+    #[serde(default)]
+    pub unscoped_survivors: Vec<evidence::Mutant>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -321,6 +327,27 @@ pub fn check(p: &Project, slug: &str, with_mutation: bool, verbose: bool) -> any
         checks.push(GateCheck { name: "seeded bugs caught (mutation score)".into(), ok, detail });
         rec.mutation = Some(m);
     }
+    // per criterion: a seeded bug that survives in a high-risk criterion's scope fails the gate
+    let doc_criteria = doc.criteria();
+    let texts: BTreeMap<String, String> =
+        changed.keys().filter_map(|c| std::fs::read_to_string(p.root.join(c)).ok().map(|t| (c.clone(), t))).collect();
+    let survivors: Vec<evidence::Mutant> =
+        rec.mutation.as_ref().filter(|m| m.problem.is_none()).map(|m| m.survivors.clone()).unwrap_or_default();
+    let (results, _) = crate::criteria::attribute(&doc_criteria, &survivors, &BTreeMap::new(), &texts);
+    if rec.mutation.as_ref().is_some_and(|m| m.problem.is_none()) && results.iter().any(|r| r.risk == Some(crate::criteria::Risk::High)) {
+        let blocking: Vec<String> = results
+            .iter()
+            .filter(|r| crate::criteria::blocks(r.risk, r.survivors.len()))
+            .map(|r| format!("{} ({} survived)", r.id, r.survivors.len()))
+            .collect();
+        let ok = crate::criteria::criteria_ok(&results);
+        let detail = if ok {
+            "no seeded bug survived in a high-risk criterion's scope".to_string()
+        } else {
+            format!("seeded bugs survived in the scope of high-risk criteria: {}", blocking.join(", "))
+        };
+        checks.push(GateCheck { name: "high-risk criteria pin their code".into(), ok, detail });
+    }
     rec.passed = evidence::gate_passes(&checks);
     rec.checks = checks;
 
@@ -357,6 +384,24 @@ pub fn check(p: &Project, slug: &str, with_mutation: bool, verbose: bool) -> any
     rec.reviewer = evidence::routing(tier, &owners);
     rec.tier = Some(tier);
     rec.risk_reasons = why;
+    // name the criteria behind the signals: medium and low survivors raise the tier, never block
+    let uncovered = rec.coverage.as_ref().map(|c| c.uncovered.clone()).unwrap_or_default();
+    let (results, unscoped) = crate::criteria::attribute(&doc_criteria, &survivors, &uncovered, &texts);
+    for r in &results {
+        let risk = r.risk.map(|x| format!(" ({} risk)", x.as_str())).unwrap_or_default();
+        if !r.survivors.is_empty() && !crate::criteria::blocks(r.risk, r.survivors.len()) {
+            rec.risk_reasons.push(format!("criterion {}{risk}: {} seeded bug(s) survived in its scope", r.id, r.survivors.len()));
+        }
+        let n: usize = r.uncovered.values().map(Vec::len).sum();
+        if n > 0 {
+            rec.risk_reasons.push(format!("criterion {}{risk}: {n} changed line(s) in its scope that no test ran", r.id));
+        }
+    }
+    if !results.is_empty() && !unscoped.is_empty() {
+        rec.risk_reasons.push(format!("{} surviving seeded bug(s) outside every criterion's scope", unscoped.len()));
+    }
+    rec.criteria_results = results;
+    rec.unscoped_survivors = unscoped;
 
     let events = load_events(p);
     let (gaps, logged) = evidence::human_minutes(&events, slug);
@@ -449,6 +494,11 @@ pub fn gate(p: &Project, slugs: &[String], all: bool, with_mutation: bool) -> an
             for s in m.survivors.iter().take(10) {
                 ui::block(&format!("  survived: {}:{} {}  →  {}", s.file, s.line, s.op, s.mutated_line.trim()));
             }
+        }
+        for r in rec.criteria_results.iter().filter(|r| !r.survivors.is_empty()) {
+            let risk = r.risk.map(|x| x.as_str()).unwrap_or("no risk tier");
+            let what = if crate::criteria::blocks(r.risk, r.survivors.len()) { "blocks" } else { "raises the tier" };
+            ui::block(&format!("  criterion {} ({risk}): {} seeded bug(s) survived in its scope, {what}", r.id, r.survivors.len()));
         }
         if rec.passed {
             ui::ok(&format!("{slug}: evidence gate passed"));
@@ -544,6 +594,27 @@ pub fn render(rec: &Record, title: &str) -> String {
             for x in m.survivors.iter().take(15) {
                 s += &format!("- `{}:{}` {} → `{}`\n", x.file, x.line, x.op, x.mutated_line.trim());
             }
+        }
+    }
+    if !rec.criteria_results.is_empty() {
+        s += "\n### Per criterion\n\n| Criterion | Risk | Seeded bugs survived in scope | Changed lines no test ran |\n| --- | --- | --- | --- |\n";
+        for r in &rec.criteria_results {
+            let risk = r.risk.map(|x| x.as_str()).unwrap_or("—");
+            let surv = if r.survivors.is_empty() {
+                "0".to_string()
+            } else {
+                format!("{}: {}", r.survivors.len(), r.survivors.iter().take(5).map(|x| format!("`{}:{}`", x.file, x.line)).collect::<Vec<_>>().join(", "))
+            };
+            let unc = if r.uncovered.is_empty() {
+                "0".to_string()
+            } else {
+                r.uncovered.iter().map(|(f, l)| format!("`{f}` {}", evidence::ranges(l))).collect::<Vec<_>>().join("; ")
+            };
+            let block = if crate::criteria::blocks(r.risk, r.survivors.len()) { " (blocks)" } else { "" };
+            s += &format!("| {} | {risk}{block} | {surv} | {unc} |\n", r.id);
+        }
+        if !rec.unscoped_survivors.is_empty() {
+            s += &format!("\n{} surviving seeded bug(s) fall outside every criterion's scope.\n", rec.unscoped_survivors.len());
         }
     }
     if let Some(t) = rec.tier {

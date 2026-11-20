@@ -1040,7 +1040,7 @@ pub fn review(p: &Project, slug: &str) -> anyhow::Result<bool> {
 
 /// `egm-dsh fix <slug> "<problem>" --files F --check TEST`: a tiny fix with less
 /// ceremony (fix.rs). Run it again to resume from wherever the fix stopped.
-pub fn fix(p: &Project, slug: &str, problem: Option<&str>, files: &[String], test: Option<&str>, manual: Option<&str>) -> anyhow::Result<()> {
+pub fn fix(p: &Project, slug: &str, problem: Option<&str>, files: &[String], test: Option<&str>, manual: Option<&str>, risk: Option<crate::criteria::Risk>) -> anyhow::Result<()> {
     check_slug(slug)?;
     if !p.config.safety.git || !crate::vcs::is_repo(&p.root) || !crate::vcs::has_commits(&p.root) {
         bail!("the fix lane needs git (a repository with a commit, and `safety.git` on): it reverts an oversized fix and its reviewer reads the diff");
@@ -1067,7 +1067,7 @@ pub fn fix(p: &Project, slug: &str, problem: Option<&str>, files: &[String], tes
                 anyhow::ensure!(!files.iter().any(|f| f == file), "the test file `{file}` cannot also be a file the fix changes");
             }
             let rel = format!("docs/fixes/{slug}.md");
-            let text = crate::fix::doc_text(&title_of(slug), problem, files, &check, &p.config.fix);
+            let text = crate::fix::doc_text(&title_of(slug), problem, files, &check, risk, &p.config.fix);
             let path = p.root.join(&rel);
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, &text)?;

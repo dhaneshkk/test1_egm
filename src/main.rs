@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use egm_core::{agent, commands, demo, diagram, evidence, gate, lock, project, safety, session, triage, tuning, verify, ui};
+use egm_core::{agent, commands, criteria, demo, diagram, evidence, gate, lock, project, safety, session, triage, tuning, verify, ui};
 
 use clap::{Parser, Subcommand};
 
@@ -261,6 +261,10 @@ enum Cmd {
         /// When no test can show it: how to verify the fix by hand.
         #[arg(long)]
         manual: Option<String>,
+        /// The fix's risk tier. Its criterion is scoped to `--files`; with `high`, a seeded
+        /// bug that survives in those files fails the evidence gate.
+        #[arg(long, value_enum)]
+        risk: Option<criteria::Risk>,
     },
     /// PlantUML sequence diagrams in design docs: `prefer` (asked for when drafting,
     /// checked when present; the default), `require` (a Technical plan needs one) or `off`.
@@ -638,7 +642,7 @@ fn run_cmd(mut p: Project, cmd: Cmd) -> anyhow::Result<()> {
                     commands::doctor(&p)
                 }
                 Cmd::Doctor => commands::doctor(&p),
-                Cmd::Fix { feature, problem, files, check, manual } => commands::fix(&p, &feature, problem.as_deref(), &files, check.as_deref(), manual.as_deref()),
+                Cmd::Fix { feature, problem, files, check, manual, risk } => commands::fix(&p, &feature, problem.as_deref(), &files, check.as_deref(), manual.as_deref(), risk),
                 Cmd::SetDiagrams { policy, plantuml_cmd, no_plantuml_cmd, plantuml_check, no_plantuml_check } => {
                     if plantuml_check {
                         p.config.plantuml_check = true;

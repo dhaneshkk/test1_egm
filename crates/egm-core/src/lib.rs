@@ -5,6 +5,7 @@ pub mod agent;
 pub mod alarm;
 pub mod commands;
 pub mod cost;
+pub mod criteria;
 pub mod demo;
 pub mod diagram;
 pub mod doc;
