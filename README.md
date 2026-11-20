@@ -18,6 +18,22 @@ It is an independent project. Google publishes its own [Elephant-Goldfish Model 
 
 - **Right-sized models** — every role runs on its own model, reasoning effort and tool list. The default `balanced` preset gives the elephant and the builder DeepSeek V4 Pro and gives the goldfish and the reviewer Flash. `egm-dsh usage` shows what each role cost.
 
+- **A team web app** — `egm-team` lets developers, reviewers and approvers follow every feature in the browser: the board, the design doc and its revisions, goldfish reviews, evidence, metrics and the audit trail. People sign in with GitHub or GitLab, every page checks a Lean-proven policy first, and every change is recorded in [Vesdb](https://github.com/dhaneshkk/test1_vesdb), a tamper-evident audit log. The view is read-only for now; comments, approvals and running egm-dsh from the browser come next.
+
+**New here?** The [user guide](docs/USER_GUIDE.md) walks through each role step by step: developers on the command line, teammates in the web app, the admin who runs it, and the auditor who checks the record. This README explains how it all works.
+
+### What is in this repository
+
+| Path | What it is | Build |
+|---|---|---|
+| `src/main.rs` | `egm-dsh`, the command line | `cargo install --path .` (Rust 1.97+) |
+| `crates/egm-core` | Everything egm-dsh does, as a library; the access policy | library |
+| `crates/egm-audit` | `egm-audit`: events into Vesdb, replay, receipts and bundles | `cargo install --path crates/egm-audit` |
+| `crates/egm-web` | `egm-team`, the team web app (Topcoat, Postgres) | `cargo install --path crates/egm-web` (Rust 1.99+) |
+| `proofs/` | Lean 4 proofs of the gate, the policy, replay and the audit link | `lean proofs/<file>.lean` |
+| `tests/e2e/` | End-to-end suites on the real dsh binary with a scripted model | see [Guarantees](#guarantees-and-how-they-are-checked) |
+| `docs/USER_GUIDE.md` | The user guide | — |
+
 ### The whole flow
 
 ```plantuml
@@ -56,6 +72,8 @@ end
 cargo install --path .        # or: cargo build --release
 egm-dsh demo                      # offline: the whole loop on a bundled sample, in seconds
 ```
+
+`cargo build --workspace --release` builds every binary (`egm-dsh`, `egm-audit`, `egm-team`). For the team web app, see [egm-team](#egm-team-the-team-web-app-read-only-view) and the [user guide's admin part](docs/USER_GUIDE.md#part-3-running-egm-team).
 
 `egm-dsh demo` creates `./egm-dsh-demo`, a tiny Python note-taking CLI called `jot`, and adds a feature to it: *tag notes and list notes by tag*. The first goldfish review fails because the design never says what happens to notes saved before tags existed; you answer, the elephant redrafts, a fresh goldfish passes, and only then does the agent build. Run the same script against real DeepSeek Harness with:
 
@@ -1060,4 +1078,8 @@ Cost: about $0.08 per doc and repeat at peak rates. The test split with 3 repeat
 - The elephant's view is a cost control, not a sandbox: a read outside it (by absolute path, or by shell where the preset allows one) is warned about, not refused. Each elephant turn copies the view afresh, which costs time on a very large repository; a scope keeps it small.
 - The word limit is a request to the model; egm-dsh reports overruns but does not cut text. It is the one that should read the project, and it may also read `.egm-dsh/`.
 - The termination proof covers egm's own steps. A human can keep editing the doc forever; each edit only reopens design.
+- egm-team is read-only so far: people read, they do not yet comment, label alarms, approve or run egm-dsh from the browser. Until the worker exists, events reach the app by `egm-dsh --events` plus `egm-audit push`, and docs by keeping the team's checkout current.
+- egm-team is built on Topcoat 0.12, which its authors call experimental. It is pinned exactly and kept in one crate so an upgrade, or a move to axum and htmx, touches only the UI.
+- Vesdb is young (0.1) and has not been independently audited. An auditor may ask for such a review before relying on it.
+- Sign-in proves who someone is on GitHub or GitLab, nothing more; access comes only from roles granted in egm-team. If Vesdb is unreachable, sign-in stops and refusals are logged locally instead of in the audit log.
 - The drift check compares file hashes against the build; it does not understand code. Handover assumes the later step's design accounts for what the earlier step built in that file; the later step's goldfish only knows that if its doc links the earlier doc.
