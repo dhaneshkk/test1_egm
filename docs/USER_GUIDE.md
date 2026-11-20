@@ -179,9 +179,23 @@ Open the address your admin gave you and choose **Sign in with GitHub** or **Sig
 | **Projects** (home) | The projects you belong to, with their feature count |
 | **Features** (`/p/<project>`) | The board: one column per phase, newest change first. A red line on a card means the feature's history in the audit log contains a step the gate refuses; tell your admin |
 | **Feature** (click a card) | The design doc as it is in the checkout; its git revisions (click one to read the doc as it was then); every goldfish review round with its verdict and how many alarms it kept; the evidence gate's checks, risk tier and seeded-bug score; the feature's audit history |
-| **Metrics** | Features by phase, goldfish and evidence-gate verdict counts. MCC appears once reviewers label alarms (*not yet*, phase 3) |
+| **Review inbox** (header link) | Features waiting for your review in every project where you review: built, the evidence gate passed for the current doc, not yet approved, not written by you. Highest risk first |
+| **Metrics** | Features by phase, goldfish and evidence-gate verdict counts; the goldfish MCC from reviewers' labels; human minutes per feature, measured from activity in the app |
 | **Members** | Who holds which roles in the project |
 | **Audit trail** | Every recorded event of the project, newest first. Each one is in Vesdb's tamper-evident log and can be verified offline |
+
+### Work together on a feature
+
+Everything below is on the feature page, under the goldfish reviews. Each action is written to the audit log first; if Vesdb does not accept it, nothing happens.
+
+- **Comment.** Pick what the comment is about (the whole doc, one `##` section, or one alarm) and write it. Developers, reviewers and approvers can comment, the author included. The author is mailed when someone else comments.
+- **Label alarms** (reviewers and approvers). For each goldfish alarm, say whether it was a **Real** gap in the doc or **Noise**. Click again to change your mind; the latest label counts. Notes are not listed: they never count against a doc, so there is nothing to score. Your labels score the goldfish on the Metrics page: an alarm the goldfish kept is its prediction of a real gap, your label is the truth. Below 29 labels in either class the MCC carries a warning; treat it as a sketch until then.
+- **Review** (reviewers and approvers, once the feature is built). **Approve**, or **Request changes** with a note saying what must change. A review is for the doc as it is now; after the doc changes, earlier reviews are shown as "an earlier revision" and no longer count.
+- **Approve the merge.** The panel lists the four things a merge approval needs and which are missing: the author is recorded, the feature is built, the evidence gate passed for this doc, and someone other than the author approved it in a review. A low- or medium-risk feature can then be approved by a reviewer; a high-risk one, or one whose risk was never assessed, only by an approver. The author never can, whatever roles they hold. Merging on GitHub or GitLab itself comes with phase 5.
+
+**Mail.** When mail is configured (Part 3), egm-team mails reviewers and approvers when a feature's evidence gate passes, and mails the author when someone else comments, reviews, or approves the merge. Nobody is mailed about their own action. The address is the one your GitHub or GitLab account shows publicly; with none, you get no mail.
+
+**Minutes.** Each time you open a feature or act on it, egm-team adds the time since your previous visit or action, at most 30 minutes (a longer gap is time away), the same way egm-dsh counts human minutes. Nothing else about your activity is kept.
 
 ### Screens
 
@@ -195,24 +209,26 @@ Captured by the browser test (`tests/e2e/run_web_e2e.py`) against real egm-dsh o
 | ![Members](screenshots/07-members.png) **Members** | ![Audit trail](screenshots/08-audit-trail.png) **Audit trail** |
 | ![No projects](screenshots/09-outsider-no-projects.png) **Signed in, no role yet** | ![No access](screenshots/10-outsider-no-access.png) **403: no role in this project** |
 | ![Phone board](screenshots/12-board-phone.png) **Board on a phone** | ![Phone feature](screenshots/13-feature-phone.png) **Feature page on a phone** |
+| ![Review inbox](screenshots/14-review-inbox.png) **Review inbox, highest risk first** | ![Alarm labels and comments](screenshots/15-labels-comments.png) **Labelling alarms, comments** |
+| ![Reviews and merge approval](screenshots/16-review-merge.png) **Reviews and the merge panel** | ![Goldfish MCC](screenshots/17-metrics-mcc.png) **Goldfish MCC from labels, human minutes** |
+| ![Author's view](screenshots/18-author-view.png) **The author's view: no review, no approval** | |
 
 ### What you can do with each role
 
-Today the app is read-only: every role can read its projects. The other permissions below are already decided and proved, and take effect as the features arrive.
-
 | Role | Can (today) | Will be able to |
 |---|---|---|
-| developer | read | start features and run egm-dsh jobs (phase 4), comment (phase 3) |
-| reviewer | read | comment, label alarms valid or noise, submit reviews, approve low- and medium-risk merges (phase 3) |
-| approver | read | everything a reviewer can, approve high-risk merges, export evidence |
-| admin | read | change members, roles and project settings, export evidence |
+| developer | read, comment | start features and run egm-dsh jobs (phase 4) |
+| reviewer | read, comment, label alarms, review, approve low- and medium-risk merges | |
+| approver | everything a reviewer can, and approve high-risk merges | export evidence |
+| admin | read | change members, roles and project settings in the app, export evidence |
 | auditor | read | export evidence |
 
 Nobody can review or approve a feature they wrote, whatever roles they hold.
 
 ### When something says no
 
-- **403 Forbidden**: you have no role in that project. The refusal is recorded in the audit log with your id. Ask an admin.
+- **403 Forbidden**: you have no role in that project, or your roles do not allow that action (reviewing your own feature, approving a high-risk merge without the approver role). The refusal is recorded in the audit log with your id and the action.
+- **"cannot approve yet: …"**: the merge panel's reason, such as no approving review by someone else yet, or a gate that passed for an older doc. The attempt is recorded too.
 - **Sign-in failed**: start again from the sign-in page in the same browser tab. Sign-in links expire after ten minutes and work only in the browser that started them.
 - **The page is out of date**: the app reads new events every second or so. A doc change shows once it is pushed to the team's checkout.
 
@@ -269,6 +285,13 @@ client_id = "Iv1.abc"
 [gitlab]
 client_id = "abc"
 base_url  = "https://gitlab.com"   # or your own GitLab
+
+[mail]                             # optional: notifications
+host     = "smtp.example"
+port     = 587
+tls      = "starttls"              # or "tls" (port 465), or "none" (a local relay only)
+from     = "egm-team <egm-team@example>"
+username = "egm-team"              # optional; the password comes from EGM_SMTP_PASSWORD
 ```
 
 Secrets come from the environment only:
@@ -278,6 +301,7 @@ Secrets come from the environment only:
 | `EGM_VESDB_TOKEN` | The Vesdb token |
 | `EGM_GITHUB_CLIENT_SECRET` | Needed when `[github]` is configured |
 | `EGM_GITLAB_CLIENT_SECRET` | Needed when `[gitlab]` is configured |
+| `EGM_SMTP_PASSWORD` | Needed when `[mail]` has a `username` |
 
 A user id is the provider and the provider's numeric id, such as `github:1234` or `gitlab:5678`; it stays the same if they rename their account. Find a GitHub id at `https://api.github.com/users/<login>`, a GitLab id on the user's profile page.
 
@@ -305,7 +329,8 @@ A field-test team of four could be two developers, one reviewer and one approver
 | Task | How |
 |---|---|
 | Rebuild the views (after a restore, or if in doubt) | `egm-team --config egm-team.toml rebuild` |
-| Back up | Vesdb is the record; follow its backup guidance. Postgres needs no backup: every view is rebuilt from Vesdb, and losing it only signs people out |
+| Back up | Vesdb is the record; follow its backup guidance. Postgres needs no backup: every view is rebuilt from Vesdb, and losing it only signs people out and resets the activity minutes. The mail outbox survives `rebuild`, so nobody is mailed twice |
+| See failed mail | `SELECT to_addr, subject, error FROM outbox WHERE error IS NOT NULL` in Postgres; egm-team's log names each failure |
 | See refusals and sign-ins | The project's Audit trail page, or read `/egm/_system` and `/egm/<project>` from Vesdb |
 | Upgrade | Topcoat is pinned to 0.12.1 and lives only in `crates/egm-web`; upgrade it there and run the browser test (`tests/e2e/run_web_e2e.py`) |
 
@@ -341,6 +366,8 @@ The phase printed for each feature must match the board. That it always does is 
 | Control | Where it is proved or tested |
 |---|---|
 | Nobody reviews or approves their own work; only an approver approves a high-risk change; the worker never approves | `proofs/EgmPolicy.lean` |
+| A merge approval needs a built feature, a gate passed for the current doc and an approving review by someone else | `EgmPolicy.merge_never_self`, `merge_needs_gate`, `merge_needs_other_review`, `merge_high_needs_approver`; `policy.rs` checks every combination; `run_web_e2e.py` (the author's attempts and the reviewer's high-risk approval are refused and recorded) |
+| The goldfish MCC counts every reviewer label exactly once, the latest per alarm | `proofs/EgmLabels.lean`: `confusion_total`, `perfect_agreement`, `relabel_moves_one`; `run_web_e2e.py` (MCC on the page equals the MCC of the clicks, before and after a rebuild) |
 | A person with no role in a project can read nothing in it | `EgmPolicy.read_iff_member`; `run_web_e2e.py` (outsider gets 403 on every page, each refusal recorded) |
 | Every page checks the policy first | `crates/egm-web/tests/policy_lint.rs` fails the build otherwise |
 | No build without a goldfish pass of the current doc | `proofs/EgmGate.lean` |
@@ -398,8 +425,12 @@ Stored in Vesdb as `io.egm.<type>`.
 | `auth.signed-in` | egm-team | `_system` | user id, login, name, provider |
 | `auth.sign-in-failed` | egm-team | `_system` | provider, reason |
 | `policy.refused` | egm-team | project | action, reason; the actor is the refused user |
+| `comment.added` | egm-team | feature | target (doc, section or alarm), text, doc hash |
+| `alarm.labelled` | egm-team | feature | round, alarm, valid or noise, whether the goldfish kept it, doc hash |
+| `review.submitted` | egm-team | feature | approve or changes, note, doc hash |
+| `merge.approved` | egm-team | feature | doc hash, risk tier |
 
-Planned with later phases: `alarm.labelled`, `comment.added`, `review.submitted`, `merge.approved`, `project.settings-changed`, `export.created`.
+Comments and review notes are the one place people's words enter the log, because they are the review record. Planned with later phases: `project.settings-changed`, `export.created`.
 
 ### Files egm-dsh keeps
 
@@ -424,4 +455,6 @@ Planned with later phases: `alarm.labelled`, `comment.added`, `review.submitted`
 | `egm-audit push`: "set VESDB_URL" | The environment is missing | Export `VESDB_URL` and `VESDB_TOKEN` |
 | egm-team won't start: "set EGM_..." | A secret is missing from the environment | Export the variable it names |
 | A feature card shows a red line | The audit log holds a gate step the gate refuses: written by something other than egm-dsh | Check the feature's audit history; report it |
+| A built feature is not in the review inbox | The gate has not passed for the current doc, the merge is already approved, or you wrote it | Open the feature: the merge panel says which |
+| No mail arrives | `[mail]` is not configured, your provider account shows no public email, or the SMTP server refused it | Ask the admin to check the outbox (Part 3, step 6) |
 | Everyone is signed out after a restart | Sessions live in Postgres; a new database means new sessions | Sign in again; nothing in the record is lost |

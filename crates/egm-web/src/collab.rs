@@ -46,6 +46,17 @@ pub fn alarms(reviews: &[(u32, Value)]) -> Vec<(u32, i64, String, String, bool)>
     out
 }
 
+/// How a comment target reads: "the doc", "section Problem", "alarm 2 (round 1)".
+pub fn target_label(t: &str) -> String {
+    if let Some(s) = t.strip_prefix("section:") {
+        format!("section {s}")
+    } else if let Some((n, id)) = t.strip_prefix("alarm:").and_then(|r| r.split_once(':')) {
+        format!("alarm {id} (round {n})")
+    } else {
+        "the doc".into()
+    }
+}
+
 /// The doc's `## ` headings, for comment targets.
 pub fn sections(doc: &str) -> Vec<String> {
     doc.lines().filter_map(|l| l.strip_prefix("## ").map(|h| h.trim().to_string())).filter(|h| !h.is_empty()).collect()
@@ -255,7 +266,7 @@ pub async fn collab_panel(cx: &Cx, p: &str, slug: &str) -> Result<impl View> {
             <div id="comment-list">
                 for (target, who, body, at) in &comments {
                     <div class="comment" style="background:#fff;border:1px solid #ddd;padding:8px;margin-bottom:8px">
-                        <div class="muted">(who)" on "(target)" · "(crate::app::when(at))</div>
+                        <div class="muted">(who)" on "(target_label(target))" · "(crate::app::when(at))</div>
                         <div style="white-space:pre-wrap">(body)</div>
                     </div>
                 }
@@ -336,6 +347,9 @@ mod tests {
     fn targets_and_sections() {
         assert!(valid_target("doc") && valid_target("section:Problem") && valid_target("alarm:2:7"));
         assert!(!valid_target("") && !valid_target("section:") && !valid_target("alarm:x:1") && !valid_target("file:/etc/passwd"));
+        assert_eq!(target_label("section:Problem"), "section Problem");
+        assert_eq!(target_label("alarm:1:7"), "alarm 7 (round 1)");
+        assert_eq!(target_label("doc"), "the doc");
         assert_eq!(sections("# T\n## Problem\ntext\n## Goals and non-goals\n"), ["Problem", "Goals and non-goals"]);
     }
 
