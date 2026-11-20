@@ -287,6 +287,15 @@ async fn execute(st: &Arc<State>, job: &db::JobRow) -> anyhow::Result<Value> {
         .envs(job_env(&st.w, |n| std::env::var(n).ok()))
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // If the worker dies, so does the job: an orphaned egm-dsh would change the checkout without
+    // its events reaching Vesdb. (egm-dsh's own lock file names a dead pid, so it is stale.)
+    #[cfg(target_os = "linux")]
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            Ok(())
+        });
+    }
     let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("cannot start {}: {e}", st.w.egm_dsh.display()))?;
     let mut stderr = child.stderr.take().expect("piped");
     let err_task = tokio::spawn(async move {

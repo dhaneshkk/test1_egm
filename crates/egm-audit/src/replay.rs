@@ -37,6 +37,11 @@ impl std::error::Error for ReplayError {}
 pub fn gate(events: &[Written]) -> Result<Option<Gate>, ReplayError> {
     let mut g: Option<Gate> = None;
     for w in events {
+        // Only egm-core's own record of the feature takes part: the app's events (a job queued
+        // before the feature exists, comments, reviews) and usage counts never move the gate.
+        if !egm_core::events::TYPES.contains(&w.kind.as_str()) || w.kind == "usage.recorded" {
+            continue;
+        }
         match (&mut g, w.kind.as_str()) {
             (None, "feature.created") => {
                 let h = w.data.get("doc_hash").and_then(|v| v.as_str()).and_then(|s| s.parse::<u64>().ok()).ok_or(ReplayError::Unreadable { id: w.id })?;
@@ -81,6 +86,20 @@ mod tests {
         let g = gate(&evs).unwrap().unwrap();
         assert_eq!(g, Gate::new(1).step(Event::EditDoc(2)).unwrap().step(Event::Goldfish(true)).unwrap().step(Event::Build).unwrap().step(Event::Review(true)).unwrap());
         assert_eq!(g.phase, Phase::Hardened);
+    }
+
+    #[test]
+    fn app_events_and_usage_are_not_part_of_the_trace() {
+        let evs = [
+            w(0, "job.requested", json!({"command": "elephant"})),
+            w(1, "job.started", json!({"job": 0})),
+            w(2, "feature.created", json!({"doc_hash": "1"})),
+            w(3, "usage.recorded", json!({"tokens": 10})),
+            w(4, "comment.added", json!({"text": "x"})),
+            w(5, "job.finished", json!({"job": 0})),
+        ];
+        assert_eq!(gate(&evs).unwrap().unwrap(), Gate::new(1));
+        assert_eq!(gate(&[w(0, "usage.recorded", json!({})), w(1, "build.completed", json!({}))]), Err(ReplayError::NotCreatedFirst { id: 1 }));
     }
 
     #[test]

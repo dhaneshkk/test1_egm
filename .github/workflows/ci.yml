@@ -80,6 +80,7 @@ jobs:
           python3 tests/e2e/run_audit_e2e.py $E $R/egm-audit /tmp/vesdb/target/release/vesdb /tmp/vesdb/target/release/vesdb-verify $D
           pip install -q playwright && python3 -m playwright install --with-deps chromium   # egm-team: browser test on Postgres 16 (preinstalled on the runner)
           python3 tests/e2e/run_web_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb $D
+          python3 tests/e2e/run_jobs_e2e.py $E $R/egm-audit $R/egm-team /tmp/vesdb/target/release/vesdb $D   # phase 4: egm-dsh run from the browser
           python3 bench/review_metrics.py --selftest
           python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
           python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2
