@@ -6,7 +6,6 @@ all-features = false
 [advisories]
 version = 2
 yanked = "warn"
-git-fetch-with-cli = true   # use the system git (and its proxy settings) to fetch the advisory database
 # Each ignore needs a reason and a date to look again.
 # zip 2.6.1 comes in through plantuml-core 0.5.4 (egm-dsh's diagram check). Reviewed 2026-11-20:
 # egm-core calls `plantuml_core::render(text)` only. plantuml-core opens a zip archive only for
