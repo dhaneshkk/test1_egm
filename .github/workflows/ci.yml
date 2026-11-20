@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lean 4.31.0 (core only, no Mathlib)
         run: |
-          curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o lean.tar.zst https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst && zstd -dc lean.tar.zst | tar -x   # to a file, so a dropped download is retried
           echo "$PWD/lean-4.31.0-linux/bin" >> "$GITHUB_PATH"
       - name: Check every proof, and that none uses sorry
         run: |
@@ -50,7 +50,7 @@ jobs:
       - run: npm install -g @deepseek-ai/dsh@latest
       - name: Lean for the executable-spec test
         run: |
-          curl -fsSL https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst | zstd -d | tar -x
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o lean.tar.zst https://github.com/leanprover/lean4/releases/download/v4.31.0/lean-4.31.0-linux.tar.zst && zstd -dc lean.tar.zst | tar -x   # to a file, so a dropped download is retried
           echo "LEAN_BIN=$PWD/lean-4.31.0-linux/bin/lean" >> "$GITHUB_ENV"
       - run: cargo build --workspace --release --locked
       - name: End-to-end tests (real dsh, scripted model)
