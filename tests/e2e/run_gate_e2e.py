@@ -16,6 +16,11 @@ built by egm-dsh with your failing test, committed on its own branch.
         and the project has no other id test. It goes red before the build and green
         after, so the red/green rule accepts it, but no seeded bug makes any test fail:
         mutation score 0%
+     4. a suite slower than the seeded-bug timeout: the acceptance command sleeps 3 s
+        and each seeded bug may run 2 s. Every seeded bug times out; a timeout used to
+        count as caught, so the gate passed at 100% with nothing judged. Now the gate
+        times the unmutated checks first and fails, naming the fix; with the timeout
+        raised it passes again, every catch a real test failure
 
 usage: python3 run_gate_e2e.py EGM_BINARY DSH_COMMAND...
 """
@@ -100,6 +105,19 @@ def main():
         out["weak-fix"] = w.egm("fix", "gap-ids", fx.PROBLEM, "--files", "jot/cli.py", "--check", fx.CHECK)
         out["b3"] = w.egm("gate", "gap-ids")
         weak = json.loads((w.proj / ".egm-dsh" / "evidence" / "gap-ids.json").read_text())
+        # B4: a suite slower than the seeded-bug timeout
+        cfg_path = a.proj / ".egm-dsh" / "config.json"
+        cfg_text = cfg_path.read_text()
+        cfg = json.loads(cfg_text)
+        cfg["acceptance_cmd"] = ["sh", "-c", "sleep 3 && " + " ".join(cfg["acceptance_cmd"])]
+        cfg_path.write_text(json.dumps(cfg, indent=2))
+        out["b4-set"] = a.egm("set-gate", "--mutant-timeout", "2")
+        out["b4"] = a.egm("gate", "gap-ids")
+        slow = json.loads((a.proj / ".egm-dsh" / "evidence" / "gap-ids.json").read_text())
+        out["b4-raise"] = a.egm("set-gate", "--mutant-timeout", "30")
+        out["b4-ok"] = a.egm("gate", "gap-ids")
+        raised = json.loads((a.proj / ".egm-dsh" / "evidence" / "gap-ids.json").read_text())
+        cfg_path.write_text(cfg_text)
     finally:
         a.close()
         w.close()
@@ -137,6 +155,13 @@ def main():
             and (weak.get("mutation") or {}).get("killed", 1) == 0 and (weak.get("mutation") or {}).get("tried", 0) >= 2,
         "B3: the failed gate makes the risk high, and the survivors are listed": weak["tier"] == "high"
             and len((weak.get("mutation") or {}).get("survivors", [])) >= 2 and "survived:" in out["b3"][1],
+        "B4: checks slower than the seeded-bug timeout fail the gate and name the fix": failed("b4", "seeded bugs caught")
+            and "--mutant-timeout" in out["b4"][1] and (slow.get("mutation") or {}).get("problem") is not None
+            and (slow.get("mutation") or {}).get("killed", 1) == 0,
+        "B4: with the timeout raised the gate passes, every catch a real failure": out["b4-ok"][0] == 0
+            and (raised.get("mutation") or {}).get("timed_out", 1) == 0
+            and (raised.get("mutation") or {}).get("killed", 0) == (raised.get("mutation") or {}).get("tried", -1) >= 3
+            and (raised.get("mutation") or {}).get("baseline_secs", 0) >= 3,
     }
     for name, ok in checks.items():
         print(("PASS " if ok else "FAIL ") + name)
