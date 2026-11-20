@@ -132,6 +132,12 @@ pub fn could_not_run(out: &Output) -> Option<String> {
 
 /// The command line that runs `program args` in `workdir` under the sandbox.
 pub fn wrap(mode: Effective, env: &[(String, String)], workdir: &Path, program: &str, args: &[String]) -> Command {
+    wrap_rw(mode, env, workdir, &[], program, args)
+}
+
+/// [`wrap`], with `extra_rw` directories also writable inside the sandbox (for example a
+/// build cache shared by the seeded-bug runs). Everything else stays read-only.
+pub fn wrap_rw(mode: Effective, env: &[(String, String)], workdir: &Path, extra_rw: &[&Path], program: &str, args: &[String]) -> Command {
     match mode {
         Effective::Bwrap => {
             let mut c = Command::new("bwrap");
@@ -141,7 +147,12 @@ pub fn wrap(mode: Effective, env: &[(String, String)], workdir: &Path, program: 
             if let Some(extra) = tmp_toolchain(program) {
                 c.args(["--ro-bind", &extra, &extra]);
             }
-            c.args(["--bind", &w, &w, "--unshare-net", "--unshare-pid", "--die-with-parent", "--clearenv"]);
+            c.args(["--bind", &w, &w]);
+            for d in extra_rw {
+                let d = d.to_string_lossy().to_string();
+                c.args(["--bind", &d, &d]);
+            }
+            c.args(["--unshare-net", "--unshare-pid", "--die-with-parent", "--clearenv"]);
             for (k, v) in env {
                 c.args(["--setenv", k, v]);
             }
@@ -159,6 +170,13 @@ pub fn wrap(mode: Effective, env: &[(String, String)], workdir: &Path, program: 
 
 /// Directories never copied into a scratch copy.
 const SKIP: [&str; 9] = [".egm-dsh", ".egm", ".git", "target", "node_modules", ".dsh", "__pycache__", ".venv", ".pytest_cache"];
+
+/// The build cache the seeded-bug runs of one project share (`CARGO_TARGET_DIR`).
+/// A scratch copy leaves `target/` out, so without it every seeded bug rebuilds the
+/// project from nothing, and a slow build turns into timeouts.
+pub fn mutant_cache_dir(root: &Path) -> PathBuf {
+    std::env::temp_dir().join(format!("egm-dsh-mutant-target-{:016x}", crate::doc::hash(&root.to_string_lossy())))
+}
 
 pub fn scratch_dir(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!("egm-dsh-{tag}-{}-{}", std::process::id(), crate::project::now_nanos()))

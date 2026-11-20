@@ -1452,6 +1452,32 @@ theorem one_more_caught_never_fails (k t m : Nat) (h : mutationOk k t m = true) 
 theorem everything_caught_passes (t m : Nat) (ht : 0 < t) (hm : m ≤ 100) : mutationOk t t m = true := by
   simp [mutationOk, ht]; exact Nat.mul_le_mul_left t hm
 
+/-- Seeded bugs end as caught, survived or timed out. A timeout is neither a catch nor a
+survivor: the verdict is `mutationOk` over the judged bugs, caught + survived. The Rust
+`MutationResult::passes` mirrors this (`judged_rule_matches_lean` checks it). -/
+def judgedOk (caught survived _timedOut minPct : Nat) : Bool := mutationOk caught (caught + survived) minPct
+
+/-- `timeout_never_counts`: the number of timeouts never changes the verdict. -/
+theorem timeout_never_counts (k s o o' m : Nat) : judgedOk k s o m = judgedOk k s o' m := rfl
+
+/-- A run in which every seeded bug timed out never passes, whatever the minimum. -/
+theorem all_timed_out_never_passes (o m : Nat) : judgedOk 0 0 o m = false := by
+  simp [judgedOk, mutationOk]
+
+/-- Catching one of the same bugs that survived never turns a pass into a fail, with
+timeouts present or not. -/
+theorem judged_one_more_caught (k s o m : Nat) (h : judgedOk k (s + 1) o m = true) : judgedOk (k + 1) s o m = true := by
+  have e : k + (s + 1) = k + 1 + s := by omega
+  unfold judgedOk at *
+  rw [e] at h
+  exact one_more_caught_never_fails k (k + 1 + s) m h
+
+/-- The old rule counted a timeout as a catch: 30 timeouts and no catch passed at 60%. -/
+example : mutationOk (0 + 30) (0 + 0 + 30) 60 = true := by decide
+example : judgedOk 0 0 30 60 = false := by decide
+example : judgedOk 6 2 2 60 = true := by decide
+example : judgedOk 4 4 7 60 = false := by decide
+
 /-- Tiers 0 (low) < 1 (medium) < 2 (high); the tier is the highest signal raised. -/
 def tier (signals : List Nat) : Nat := signals.foldl max 0
 
