@@ -25,6 +25,7 @@ use topcoat::view::{component, error_boundary, view, View};
 use topcoat::Result;
 
 pub fn router(state: crate::App) -> Router {
+    let hsts = state.cfg.public_url.starts_with("https://");
     Router::builder()
         .layout(root)
         .page(index)
@@ -39,6 +40,7 @@ pub fn router(state: crate::App) -> Router {
         .page(members)
         .page(audit_trail)
         .route(health)
+        .route(health_ready)
         .page(crate::collab::inbox)
         .page(crate::jobs::job_page)
         .page(crate::jobs::jobs_page)
@@ -56,6 +58,7 @@ pub fn router(state: crate::App) -> Router {
         .route(crate::collab::approve)
         .with(state)
         .layer(CookieLayer::new())
+        .layer(crate::security::SecurityHeaders { hsts })
         .build()
 }
 
@@ -268,6 +271,20 @@ async fn sign_out(cx: &Cx) -> Result<SeeOther> {
 async fn health(cx: &Cx) -> Result<&'static str> {
     let _ = cx;
     Ok("ok")
+}
+
+/// Ready to serve: Postgres answers and Vesdb answers a read (for the load balancer; SOC 2 A1).
+#[route(GET "/health/ready")]
+async fn health_ready(cx: &Cx) -> Result<(StatusCode, &'static str)> {
+    let a = app(cx);
+    let pg = a.db.query_one("SELECT 1", &[]).await.is_ok();
+    let log = a.log.clone();
+    let vesdb = tokio::task::spawn_blocking(move || log.history(crate::SYSTEM, Some("_ready")).is_ok()).await.unwrap_or(false);
+    Ok(match (pg, vesdb) {
+        (true, true) => (StatusCode::OK, "ready"),
+        (false, _) => (StatusCode::SERVICE_UNAVAILABLE, "postgres unavailable"),
+        (_, false) => (StatusCode::SERVICE_UNAVAILABLE, "vesdb unavailable"),
+    })
 }
 
 // ------------------------------------------------------------------------------- pages
@@ -493,6 +510,22 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
     let month = db::month_tokens(&*app(cx).db, p).await.ah()?;
     let ceiling = app(cx).cfg.project(p).and_then(|c| c.monthly_tokens);
     let estimated = usage.iter().any(|u| u.3);
+    let rep = crate::metrics::report(&*app(cx).db, p).await.ah()?;
+    let times = [
+        ("Passing gate → first review", crate::metrics::fmt_median(&rep.timing.to_review)),
+        ("Passing gate → merge approval", crate::metrics::fmt_median(&rep.timing.to_approval)),
+        ("Passing gate → merged on the code host", crate::metrics::fmt_median(&rep.timing.to_merge)),
+    ];
+    use crate::metrics::Outcome;
+    let cnt = |passed: bool, o: Outcome| rep.outcomes.iter().filter(|x| x.1 == passed && x.2 == o).count() as i64;
+    let (pc, pd, fc, fd) = (cnt(true, Outcome::Clean), cnt(true, Outcome::Defect), cnt(false, Outcome::Clean), cnt(false, Outcome::Defect));
+    let open = rep.outcomes.iter().filter(|x| x.2 == Outcome::Open).count();
+    // positive class: the gate passed; truth: the change stayed clean
+    let gate_mcc = mcc(pc as f64, pd as f64, fd as f64, fc as f64).map(|m| format!("{m:.2}")).unwrap_or_else(|| "undefined".into());
+    let precision = crate::metrics::wilson(pc as u64, (pc + pd) as u64)
+        .map(|(p, lo, hi)| format!("{:.0}% of passed changes stayed clean (95% interval {:.0}% to {:.0}%)", p * 100.0, lo * 100.0, hi * 100.0))
+        .unwrap_or_else(|| "no passed change has a known outcome yet".into());
+    let gate_few = (pc + fd).min(pd + fc) < MIN_PER_CLASS || pc + pd < MIN_PER_CLASS || fc + fd < MIN_PER_CLASS;
     Ok(view! {
         <h1>(p)" · metrics"</h1>
         tabs(project: p)
@@ -529,6 +562,21 @@ async fn metrics(cx: &Cx) -> Result<impl View> {
                 for (f, m, n) in &minutes { <tr><td>(f)</td><td>(format!("{m:.1}"))</td><td>(*n)</td></tr> }
             </table>
         }
+        <h2>"Review times"</h2>
+        <p class="muted">"From the first passing evidence gate of each feature. Medians with 95% bootstrap intervals."</p>
+        <table id="review-times">
+            for (name, v) in &times { <tr><td>(*name)</td><td>(v.as_str())</td></tr> }
+        </table>
+        <h2>"Gate outcomes"</h2>
+        <p class="muted">(format!("A merged change counts as a defect when it was reverted, or a defect was reported, within {} days of the merge. {open} merged change(s) are still inside that window.", crate::metrics::WINDOW_DAYS))</p>
+        <table id="gate-outcomes">
+            <tr><th></th><th>"Stayed clean"</th><th>"Defect"</th></tr>
+            <tr><td>"Gate passed"</td><td>(pc)</td><td>(pd)</td></tr>
+            <tr><td>"Gate failed (merged anyway)"</td><td>(fc)</td><td>(fd)</td></tr>
+        </table>
+        <p>"Gate MCC: "<strong id="gate-mcc">(gate_mcc.as_str())</strong>". "<span id="gate-precision">(precision.as_str())</span>"."</p>
+        <p class="muted">"With the gate a required check, failed changes are not merged, so the failed row stays empty and the MCC undefined; the share of passed changes that stayed clean is the useful number."</p>
+        if gate_few { <p class="bad" id="gate-warning">(format!("Warning: fewer than {MIN_PER_CLASS} cases per class; read these as a trend, not a result."))</p> }
         <h2>"Cost"</h2>
         <p id="month-tokens">(match ceiling { Some(c) => format!("Tokens this month: {month} of the {c} ceiling."), None => format!("Tokens this month: {month} (no ceiling).") })</p>
         if usage.is_empty() { <p class="muted" id="cost-by-feature">"No model calls recorded yet."</p> } else {

@@ -38,6 +38,8 @@ pub const APP_TYPES: &[&str] = &[
     "merge.completed",
     "change.reverted",
     "defect.reported",
+    "ops.restore-tested",
+    "ops.redacted",
 ];
 
 /// The prefix of every egm event type in Vesdb, so `feature.created` is stored as

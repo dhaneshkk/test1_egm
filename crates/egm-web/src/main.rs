@@ -3,6 +3,11 @@
 //!   egm-team serve   --config egm-team.toml     serve the app and keep the views current
 //!   egm-team worker  --config egm-team.toml     run only the worker (needs [worker])
 //!   egm-team rebuild --config egm-team.toml     drop the views and rebuild them from Vesdb
+//!   egm-team evidence --from 2026-11-01 --to 2026-12-01 --out DIR
+//!                                               the SOC 2 evidence pack for a period
+//!   egm-team redact  --project P [--before DATE] [--apply]
+//!                                               erase people's words older than the retention
+//!                                               period from Vesdb (EGM_VESDB_REDACT_TOKEN)
 //!   egm-team grant   --config egm-team.toml --project P --user github:123 --roles developer,reviewer
 //!                                               set someone's roles (recorded in Vesdb;
 //!                                               an empty --roles removes them)
@@ -28,6 +33,27 @@ enum Cmd {
     Serve,
     Worker,
     Rebuild,
+    Evidence {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Redact {
+        #[arg(long)]
+        project: String,
+        /// Erase words older than this date (default: today minus the project's retention_days).
+        #[arg(long)]
+        before: Option<String>,
+        /// Without it, only list what would be erased.
+        #[arg(long)]
+        apply: bool,
+        /// Who runs it, for the record (default: the local user name).
+        #[arg(long)]
+        by: Option<String>,
+    },
     Grant {
         #[arg(long)]
         project: String,
@@ -86,8 +112,69 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Rebuild => {
             let mut client = db::connect(&cfg.database_url).await?;
+            let t0 = std::time::Instant::now();
             let n = db::rebuild(&mut client, vesdb(&cfg)).await?;
-            println!("rebuilt the views from {n} event(s)");
+            let secs = t0.elapsed().as_secs_f64();
+            println!("rebuilt the views from {n} event(s) in {secs:.1} s");
+            // the restore drill is evidence for SOC 2 A1.3
+            let ev = AuditEvent {
+                kind: "ops.restore-tested".into(),
+                project: egm_web::SYSTEM.into(),
+                feature: String::new(),
+                actor: format!("cli:{}", std::env::var("USER").unwrap_or_else(|_| "admin".into())),
+                data: serde_json::json!({"events": n, "seconds": (secs * 10.0).round() / 10.0}),
+            };
+            let key = format!("ops/{}", egm_web::oauth::random_hex(16)?);
+            let log = vesdb(&cfg);
+            let written = tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
+            for w in &written {
+                db::apply(&client, w).await?;
+            }
+        }
+        Cmd::Evidence { from, to, out } => {
+            let client = db::connect(&cfg.database_url).await?;
+            db::sync(&mut db::connect(&cfg.database_url).await?, vesdb(&cfg)).await?;
+            let (pack, bundle) = egm_web::soc2::pack(&cfg, &client, vesdb(&cfg), &from, &to).await?;
+            std::fs::create_dir_all(&out)?;
+            std::fs::write(out.join("evidence.json"), serde_json::to_string_pretty(&pack)?)?;
+            std::fs::write(out.join("evidence.md"), egm_web::soc2::markdown(&pack))?;
+            if let Some(b) = bundle {
+                std::fs::write(out.join("bundle.json"), serde_json::to_string_pretty(&b)?)?;
+            }
+            println!("wrote the evidence pack for {from} to {to} in {}", out.display());
+        }
+        Cmd::Redact { project, before, apply, by } => {
+            let pc = cfg.project(&project).ok_or_else(|| anyhow::anyhow!("no project `{project}`"))?;
+            let before = match before {
+                Some(b) => b,
+                None => {
+                    let days = pc.retention_days.ok_or_else(|| anyhow::anyhow!("project `{project}` has no retention_days; pass --before"))?;
+                    let client = db::connect(&cfg.database_url).await?;
+                    client.query_one("SELECT to_char((now() - make_interval(days => $1)) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS')", &[&(days as i32)]).await?.get(0)
+                }
+            };
+            let log = vesdb(&cfg);
+            let (l1, l2, p2) = (log.clone(), log.clone(), project.clone());
+            let evs = tokio::task::spawn_blocking(move || l1.history(&p2, None)).await??;
+            let signs = tokio::task::spawn_blocking(move || l2.history(egm_web::SYSTEM, None)).await??;
+            let ids = egm_web::retention::to_redact(&evs, &signs, &before);
+            println!("{} event(s) of `{project}` hold words or sign-in details from before {before}", ids.len());
+            if apply && !ids.is_empty() {
+                let token = std::env::var("EGM_VESDB_REDACT_TOKEN").map_err(|_| anyhow::anyhow!("set EGM_VESDB_REDACT_TOKEN (a Vesdb token with the redact scope)"))?;
+                let r = vesdb_log(&cfg, &token)?;
+                let (ids2, reason) = (ids.clone(), format!("egm-team retention for {project}: words before {before}"));
+                tokio::task::spawn_blocking(move || r.redact(&ids2, &reason)).await??;
+                let by = by.unwrap_or_else(|| format!("cli:{}", std::env::var("USER").unwrap_or_else(|_| "admin".into())));
+                let ev = AuditEvent { kind: "ops.redacted".into(), project: project.clone(), feature: String::new(), actor: by,
+                                      data: serde_json::json!({"events": ids.len(), "before": before}) };
+                let key = format!("ops/{}", egm_web::oauth::random_hex(16)?);
+                tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
+                let mut client = db::connect(&cfg.database_url).await?;
+                let n = db::rebuild(&mut client, vesdb(&cfg)).await?;
+                println!("erased {} event(s); rebuilt the views from {n} event(s)", ids.len());
+            } else if !apply {
+                println!("nothing erased; run again with --apply");
+            }
         }
         Cmd::Grant { project, user, roles, by } => {
             anyhow::ensure!(cfg.project(&project).is_some(), "no project `{project}` in {}", cli.config.display());

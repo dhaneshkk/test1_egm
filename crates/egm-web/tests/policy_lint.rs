@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-const OPEN: &[&str] = &["sign_in", "auth_start", "auth_callback", "sign_out", "health", "job_js", "github_hook", "gitlab_hook"];
+const OPEN: &[&str] = &["sign_in", "auth_start", "auth_callback", "sign_out", "health", "health_ready", "job_js", "github_hook", "gitlab_hook"];
 const HANDLER_ATTRS: &[&str] = &["#[page", "#[route", "#[shard", "#[procedure"];
 
 #[derive(Debug)]

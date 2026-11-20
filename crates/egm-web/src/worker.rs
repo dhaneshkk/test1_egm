@@ -156,7 +156,18 @@ pub async fn run(cfg: Config, log: Arc<dyn AuditLog>, wake: Arc<Notify>) {
             return;
         }
     };
+    let mut last_purge = std::time::Instant::now() - Duration::from_secs(3600);
     loop {
+        if last_purge.elapsed() >= Duration::from_secs(3600) {
+            last_purge = std::time::Instant::now();
+            for p in st.cfg.projects.iter().filter(|p| p.retention_days.is_some()) {
+                match crate::retention::purge(&*st.db, &p.name, p.retention_days.unwrap_or(0)).await {
+                    Ok(n) if n > 0 => eprintln!("egm-team worker: retention removed {n} row(s) of {}", p.name),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("egm-team worker: retention: {e}"),
+                }
+            }
+        }
         if let Err(e) = db::sync(&mut sync_client, st.log.clone()).await {
             eprintln!("egm-team worker: {e}");
         }
