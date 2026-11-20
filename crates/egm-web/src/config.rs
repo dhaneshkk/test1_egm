@@ -42,6 +42,8 @@ pub struct Config {
     pub projects: Vec<ProjectConfig>,
     pub github: Option<OAuthApp>,
     pub gitlab: Option<OAuthApp>,
+    /// Mail notifications (review requests, reviews, approvals, comments). Off when absent.
+    pub mail: Option<MailConfig>,
     /// How often the projector reads new events from Vesdb, in milliseconds.
     #[serde(default = "default_refresh")]
     pub refresh_ms: u64,
@@ -70,6 +72,29 @@ pub struct OAuthApp {
     pub client_secret: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MailConfig {
+    pub host: String,
+    #[serde(default = "default_smtp_port")]
+    pub port: u16,
+    /// `starttls` (default), `tls`, or `none` (a local relay only).
+    #[serde(default = "default_tls")]
+    pub tls: String,
+    pub from: String,
+    /// With a username, the password comes from `EGM_SMTP_PASSWORD`.
+    pub username: Option<String>,
+    #[serde(skip)]
+    pub password: String,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+fn default_tls() -> String {
+    "starttls".into()
+}
+
 fn default_listen() -> String {
     "127.0.0.1:8080".into()
 }
@@ -95,6 +120,12 @@ impl Config {
             g.client_secret = std::env::var("EGM_GITLAB_CLIENT_SECRET").map_err(|_| anyhow::anyhow!("set EGM_GITLAB_CLIENT_SECRET"))?;
         }
         anyhow::ensure!(c.github.is_some() || c.gitlab.is_some(), "configure [github] or [gitlab] sign-in");
+        if let Some(m) = &mut c.mail {
+            anyhow::ensure!(["starttls", "tls", "none"].contains(&m.tls.as_str()), "[mail] tls must be starttls, tls or none");
+            if m.username.is_some() {
+                m.password = std::env::var("EGM_SMTP_PASSWORD").map_err(|_| anyhow::anyhow!("set EGM_SMTP_PASSWORD"))?;
+            }
+        }
         for p in &c.projects {
             anyhow::ensure!(valid_name(&p.name) && p.name != crate::SYSTEM, "project name `{}`: use letters, digits, `-` and `_`", p.name);
             anyhow::ensure!(p.host == "github" || p.host == "gitlab", "project `{}`: host must be github or gitlab", p.name);

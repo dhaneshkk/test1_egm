@@ -72,6 +72,46 @@ pub async fn require(cx: &Cx, project: &str, action: Action) -> topcoat::Result<
     Ok(v)
 }
 
+/// The check for an action on one feature: the role rules with the feature's author and risk
+/// tier (from the audit log). Returns the viewer and the feature's state.
+pub async fn require_feature(cx: &Cx, project: &str, slug: &str, action: Action) -> topcoat::Result<(Viewer, db::FeatureState)> {
+    let v = signed_in(cx).await?;
+    if app(cx).cfg.project(project).is_none() {
+        return Err(not_found().into());
+    }
+    let st = db::feature_state(&*app(cx).db, project, slug).await.ah()?.ok_or_else(not_found)?;
+    let roles = roles_of(cx, &v, project).await?;
+    let author = st.author == v.id;
+    if let Err(denial) = allowed(&roles, author, tier_of(&st), action) {
+        refuse(app(cx).log.clone(), project, &v.id, action, &denial.to_string()).await;
+        return Err(forbidden().into());
+    }
+    Ok((v, st))
+}
+
+/// The feature's risk tier; unknown counts as high, so an unassessed change needs an approver.
+pub fn tier_of(st: &db::FeatureState) -> Tier {
+    match st.tier.as_deref() {
+        Some("low") => Tier::Low,
+        Some("medium") => Tier::Medium,
+        _ => Tier::High,
+    }
+}
+
+/// Write one app event to the audit log and apply it to the views at once. Nothing happens
+/// unless the log accepted it: no record, no action.
+pub async fn record_now(cx: &Cx, ev: AuditEvent) -> topcoat::Result<()> {
+    let a = app(cx);
+    let log = a.log.clone();
+    let key = format!("web/{}", crate::oauth::random_hex(16).ah()?);
+    let written = tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
+    for w in &written {
+        db::apply(&*a.db, w).await.ah()?;
+    }
+    a.refresh.notify_one();
+    Ok(())
+}
+
 /// The projects the viewer may read.
 pub async fn readable_projects(cx: &Cx, v: &Viewer) -> topcoat::Result<Vec<String>> {
     let mut out = vec![];

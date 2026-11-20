@@ -1,6 +1,7 @@
 //! egm-team: the web app over egm-dsh, so developers and reviewers work on features together.
 //!
-//! Phase 2 is the read-only team view. The app reads two things: Postgres views rebuilt from
+//! Phase 2 is the read-only team view; phase 3 adds collaboration ([`collab`]): alarm labels,
+//! comments, reviews, merge approval with separation of duties, and mail ([`mail`]). The app reads two things: Postgres views rebuilt from
 //! the Vesdb audit log ([`db`]), and the project checkout egm-dsh works in ([`checkout`]).
 //! People sign in with GitHub or GitLab ([`oauth`]); every page checks the policy first
 //! ([`authz`]).
@@ -8,8 +9,10 @@
 pub mod app;
 pub mod authz;
 pub mod checkout;
+pub mod collab;
 pub mod config;
 pub mod db;
+pub mod mail;
 pub mod oauth;
 
 use std::sync::Arc;
