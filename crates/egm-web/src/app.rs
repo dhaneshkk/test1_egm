@@ -279,7 +279,9 @@ async fn health_ready(cx: &Cx) -> Result<(StatusCode, &'static str)> {
     let a = app(cx);
     let pg = a.db.query_one("SELECT 1", &[]).await.is_ok();
     let log = a.log.clone();
-    let vesdb = tokio::task::spawn_blocking(move || log.history(crate::SYSTEM, Some("_ready")).is_ok()).await.unwrap_or(false);
+    // the client retries an unreachable Vesdb for a minute; the load balancer wants an answer now
+    let read = tokio::task::spawn_blocking(move || log.history(crate::SYSTEM, Some("_ready")).is_ok());
+    let vesdb = matches!(tokio::time::timeout(std::time::Duration::from_secs(3), read).await, Ok(Ok(true)));
     Ok(match (pg, vesdb) {
         (true, true) => (StatusCode::OK, "ready"),
         (false, _) => (StatusCode::SERVICE_UNAVAILABLE, "postgres unavailable"),
