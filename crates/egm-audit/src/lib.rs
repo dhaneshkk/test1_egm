@@ -118,6 +118,10 @@ pub trait AuditLog: Send + Sync {
     /// Every event of a project (`feature: None`, including all features) or of one feature,
     /// oldest first.
     fn history(&self, project: &str, feature: Option<&str>) -> Result<Vec<Written>, AuditError>;
+
+    /// Every egm event of every project with an id above `after` (all of them for `None`),
+    /// oldest first: what the web app's projector reads to rebuild and refresh its views.
+    fn since(&self, after: Option<u64>) -> Result<Vec<Written>, AuditError>;
 }
 
 /// An idempotency key for the `seq`-th write of job `job`: stable across retries and
@@ -167,6 +171,11 @@ impl AuditLog for MemoryLog {
         let s = subject(project, feature);
         let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         Ok(g.0.iter().filter(|w| w.subject == s || (feature.is_none() && w.subject.starts_with(&format!("{s}/")))).cloned().collect())
+    }
+
+    fn since(&self, after: Option<u64>) -> Result<Vec<Written>, AuditError> {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(g.0.iter().filter(|w| after.is_none_or(|a| w.id > a)).cloned().collect())
     }
 }
 
@@ -320,6 +329,16 @@ impl AuditLog for VesdbLog {
         let (s, t) = self.call("POST", "/api/v2/data/read-events", &body, None)?;
         parse_events(s, &t)
     }
+
+    fn since(&self, after: Option<u64>) -> Result<Vec<Written>, AuditError> {
+        let mut options = json!({"recursive": true});
+        if let Some(a) = after {
+            options["lowerBound"] = json!({"id": a.to_string(), "type": "exclusive"});
+        }
+        let body = json!({"subject": "/egm", "options": options}).to_string();
+        let (s, t) = self.call("POST", "/api/v2/data/read-events", &body, None)?;
+        parse_events(s, &t)
+    }
 }
 
 #[cfg(test)]
@@ -349,6 +368,8 @@ mod tests {
         log.append(&key("job1", 1), &[ev("member.role-changed", "")]).unwrap();
         assert_eq!(log.history("jot", Some("tags")).unwrap().len(), 1);
         assert_eq!(log.history("jot", None).unwrap().len(), 2);
+        assert_eq!(log.since(None).unwrap().len(), 2);
+        assert_eq!(log.since(Some(0)).unwrap().len(), 1);
     }
 
     #[test]

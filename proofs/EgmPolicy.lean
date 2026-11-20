@@ -11,7 +11,9 @@
   * `worker_limited`: the worker alone can never review, approve, change roles or
     settings, or start a feature;
   * `monotone`: adding a role never takes an action away (so removing one never grants
-    an action).
+    an action);
+  * `read_iff_member`: egm-team's read-only pages open to anyone holding any role in the
+    project, and to no one else.
 -/
 
 namespace EgmPolicy
@@ -84,6 +86,11 @@ theorem monotone (rs rs' : List Role) (hsub : ∀ r, r ∈ rs → r ∈ rs') (au
   · have : Role.approver ∈ rs' := hsub _ (by simpa using hc)
     have : rs'.contains .approver = true := by simpa using this
     simp_all
+
+/-- egm-team's read-only pages (phase 2): any role can read a project, no role cannot. -/
+theorem read_iff_member (rs : List Role) (author : Bool) (t : Tier) :
+    allowed rs author t .read = !rs.isEmpty := by
+  cases rs <;> simp [allowed, grants, selfReview]
 
 -- the field-test team: 2 developers, 1 reviewer, 1 approver
 example : allowed [.reviewer] false .medium .approveMerge = true := by decide

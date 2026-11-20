@@ -17,7 +17,7 @@ default = ["plantuml-core"]
 plantuml-core = ["egm-core/plantuml-core"]
 
 [workspace]
-members = ["crates/egm-core", "crates/egm-audit"]
+members = ["crates/egm-core", "crates/egm-audit", "crates/egm-web"]
 resolver = "3"
 
 [profile.release]
