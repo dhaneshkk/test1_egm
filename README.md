@@ -899,6 +899,51 @@ egm-audit bundle 0 1 2                            # offline evidence bundle; che
 
 **Who may do what** (`policy.rs`, mirrored by `proofs/EgmPolicy.lean`): developers start features and run jobs; reviewers and approvers review, label alarms and approve merges; only an approver approves a high-risk merge; admins change members and settings; auditors read and export; the worker records what a job did. Nobody reviews or approves a feature they wrote, and taking a role away never grants an action.
 
+## egm-team: the team web app (read-only view)
+
+`crates/egm-web` builds `egm-team`, a [Topcoat](https://github.com/tokio-rs/topcoat) web app (pinned to 0.12.1; it needs Rust 1.99 or newer). This first version is read-only: people sign in and see what egm-dsh and the audit log hold. Running egm-dsh from the browser, comments and approvals come next.
+
+| Page | Shows |
+|---|---|
+| `/` | The projects you are a member of |
+| `/p/<project>` | The feature board, one column per gate phase |
+| `/p/<project>/f/<feature>` | The design doc, its git revisions, every goldfish review, the evidence gate's checks, risk and seeded-bug score, and the feature's audit history |
+| `/p/<project>/f/<feature>/rev/<commit>` | The doc as it was at that commit |
+| `/p/<project>/metrics` | Features by phase, goldfish and gate verdicts (MCC once reviewers label alarms) |
+| `/p/<project>/members` | Who holds which roles |
+| `/p/<project>/audit` | Every audit event of the project |
+
+**Where the data comes from.** Postgres holds views rebuilt from the Vesdb audit log (`egm-team rebuild` drops and replays them); words people read (docs, review findings, evidence) come from the project's checkout, read-only. The log, not the database, is the record.
+
+**Sign-in.** GitHub or GitLab OAuth (authorization code; GitLab with PKCE). egm-team asks only for the user's identity and keeps the user's id, login and name. Sessions are `__Host-` cookies, HttpOnly and SameSite=Lax, stored hashed. Every sign-in is written to Vesdb before the session starts; with Vesdb down, nobody signs in.
+
+**The policy check.** Every page and route starts with `authz::require` (or `authz::signed_in` for the projects list), which applies `policy.rs`. A refusal is a 403 and a `policy.refused` event in Vesdb. `crates/egm-web/tests/policy_lint.rs` reads the source and fails the build if a handler does not start with the check; Topcoat's shards bypass page guards, so the test covers `#[shard]` and `#[procedure]` too.
+
+```toml
+# egm-team.toml; secrets come from EGM_VESDB_TOKEN, EGM_GITHUB_CLIENT_SECRET, EGM_GITLAB_CLIENT_SECRET
+listen = "127.0.0.1:8080"
+public_url = "https://egm-team.example"
+database_url = "host=/run/postgresql dbname=egm"
+vesdb_url = "http://vesdb-a:3000,http://vesdb-b:3000"
+admins = ["github:1234"]
+
+[[project]]
+name = "jot"
+checkout = "/srv/egm/jot"
+host = "github"
+
+[github]
+client_id = "Iv1.abc"
+[gitlab]
+client_id = "abc"
+base_url = "https://gitlab.com"
+```
+
+```sh
+egm-team grant --project jot --user github:5678 --roles developer   # recorded in Vesdb as member.role-changed
+egm-team serve
+```
+
 ## How egm-dsh drives DeepSeek Harness
 
 egm launches the headless profile once per turn and reads its JSON event stream:
@@ -961,6 +1006,7 @@ The default launcher is `npx -y @deepseek-ai/dsh@latest`; set `"dsh_command"` in
 | Replaying a feature's audit events gives exactly the gate egm-dsh kept, for every start and every trace; nothing egm-dsh emits is a transition the gate refuses; a replayed gate is safe | `proofs/EgmGate.lean`, `namespace EgmReplay`: `replay_emitted`, `emitted_never_refused`, `replay_safe`; `cargo test` (`egm-audit` replay through the events egm-core really emits); `run_audit_e2e.py` (real dsh, real Vesdb: replay from the events file and from Vesdb equals the saved gate) |
 | An author never reviews or approves their own feature; only an approver approves a high-risk merge; the worker never reviews, approves or changes roles; adding a role never takes an action away | `proofs/EgmPolicy.lean`: `author_never_approves`, `high_risk_needs_approver`, `worker_limited`, `monotone`; `cargo test` (`policy`: the same four facts over all 4,224 cases) |
 | An auditor's export of a feature holds exactly the events the app replays for it; a feature's history only grows at the end; a retried write under one idempotency key is recorded once | `proofs/VesdbLink.lean`: `export_exact`, `history_prefix`, `retry_once` (Vesdb's own `receipt_binding`, `no_fork`, `ack_durable`, `idempotent` are proved in its repository); `run_audit_e2e.py`: pushing twice writes nothing new, a killed writer loses and doubles nothing, `vesdb-verify` fails a bucket with one changed byte |
+| Every egm-team page and route checks the policy before it reads anything; an outsider gets 403 on every project page and each refusal is recorded; sign-ins are recorded before the session starts | `crates/egm-web/tests/policy_lint.rs` (reads every handler; also proves it catches a missing check); `run_web_e2e.py` (Chromium, Postgres 16, Vesdb, fake GitHub and GitLab with PKCE checked: 29 checks) |
 | The Rust gate matches the Lean model | `cargo test`: all 117,649 event traces up to length 6; the invariant is also asserted on every save |
 | egm works with real DeepSeek Harness | `python3 tests/e2e/run_dsh_e2e.py target/release/egm-dsh --preset P dsh` runs the real `dsh` binary against a scripted fake model endpoint and checks: session resume, read-only enforcement, write access only for build, the gate, and a hardened result |
 
@@ -973,6 +1019,7 @@ python3 tests/e2e/run_escalate_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_room_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_loop_e2e.py target/release/egm-dsh "$(which dsh)"
 python3 tests/e2e/run_provider_e2e.py target/release/egm-dsh "$(which dsh)"
+python3 tests/e2e/run_web_e2e.py target/release/egm-dsh target/release/egm-audit target/release/egm-team "$VESDB/target/release/vesdb" "$(which dsh)"   # needs Postgres 16 and Playwright
 python3 tests/e2e/run_audit_e2e.py target/release/egm-dsh target/release/egm-audit "$VESDB/target/release/vesdb" "$VESDB/target/release/vesdb-verify" "$(which dsh)"   # VESDB: a build of dhaneshkk/test1_vesdb
 ```
 

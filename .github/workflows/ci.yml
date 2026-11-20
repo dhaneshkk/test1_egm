@@ -78,6 +78,8 @@ jobs:
           git clone -q --depth 1 https://github.com/dhaneshkk/test1_vesdb /tmp/vesdb   # audit log: egm-team's Vesdb, two servers on one bucket
           cargo build --release -q --manifest-path /tmp/vesdb/Cargo.toml -p vesdb-server -p vesdb-verify
           python3 tests/e2e/run_audit_e2e.py $E target/release/egm-audit /tmp/vesdb/target/release/vesdb /tmp/vesdb/target/release/vesdb-verify $D
+          pip install -q playwright && python3 -m playwright install --with-deps chromium   # egm-team: browser test on Postgres 16 (preinstalled on the runner)
+          python3 tests/e2e/run_web_e2e.py $E target/release/egm-audit target/release/egm-team /tmp/vesdb/target/release/vesdb $D
           python3 bench/review_metrics.py --selftest
           python3 bench/make_twins.py && git diff --exit-code bench/corpus   # twins and labels are generated, never hand-edited
           python3 bench/evaluate.py --selftest --egm-dsh $E --dsh $D --repeats 2

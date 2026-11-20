@@ -1,0 +1,125 @@
+//! egm-team's configuration: one TOML file, with secrets from the environment only.
+//!
+//! ```toml
+//! listen = "127.0.0.1:8080"
+//! public_url = "https://egm-team.example"      # OAuth redirects come back here
+//! database_url = "host=/run/postgresql dbname=egm"
+//! vesdb_url = "http://vesdb-a:3000,http://vesdb-b:3000"
+//! admins = ["github:1234"]                      # may grant roles before anyone else can
+//!
+//! [[project]]
+//! name = "jot"
+//! checkout = "/srv/egm/jot"                    # read-only: docs, reviews, evidence, git history
+//! host = "github"                               # or "gitlab"
+//!
+//! [github]
+//! client_id = "Iv1.abc"                          # secret: EGM_GITHUB_CLIENT_SECRET
+//! [gitlab]
+//! client_id = "abc"                              # secret: EGM_GITLAB_CLIENT_SECRET
+//! base_url = "https://gitlab.com"                # or your own GitLab
+//! ```
+//!
+//! Environment: `EGM_VESDB_TOKEN` (write and audit scopes), `EGM_GITHUB_CLIENT_SECRET`,
+//! `EGM_GITLAB_CLIENT_SECRET`, `EGM_SESSION_KEY` is not needed (session tokens are random and
+//! stored hashed).
+
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default = "default_listen")]
+    pub listen: String,
+    pub public_url: String,
+    pub database_url: String,
+    pub vesdb_url: String,
+    #[serde(default = "default_source")]
+    pub source: String,
+    #[serde(default)]
+    pub admins: Vec<String>,
+    #[serde(default, rename = "project")]
+    pub projects: Vec<ProjectConfig>,
+    pub github: Option<OAuthApp>,
+    pub gitlab: Option<OAuthApp>,
+    /// How often the projector reads new events from Vesdb, in milliseconds.
+    #[serde(default = "default_refresh")]
+    pub refresh_ms: u64,
+    #[serde(skip)]
+    pub vesdb_token: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectConfig {
+    pub name: String,
+    pub checkout: PathBuf,
+    #[serde(default = "default_host")]
+    pub host: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuthApp {
+    pub client_id: String,
+    /// GitHub: `https://github.com` (API at `https://api.github.com`); GitLab: the instance URL.
+    pub base_url: Option<String>,
+    /// GitHub only: the REST API base, when not `https://api.github.com`.
+    pub api_url: Option<String>,
+    #[serde(skip)]
+    pub client_secret: String,
+}
+
+fn default_listen() -> String {
+    "127.0.0.1:8080".into()
+}
+fn default_source() -> String {
+    "https://egm-team.local".into()
+}
+fn default_host() -> String {
+    "github".into()
+}
+fn default_refresh() -> u64 {
+    1000
+}
+
+impl Config {
+    pub fn load(path: &Path) -> anyhow::Result<Config> {
+        let text = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", path.display()))?;
+        let mut c: Config = toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        c.vesdb_token = std::env::var("EGM_VESDB_TOKEN").map_err(|_| anyhow::anyhow!("set EGM_VESDB_TOKEN (Vesdb token with write and audit scopes)"))?;
+        if let Some(g) = &mut c.github {
+            g.client_secret = std::env::var("EGM_GITHUB_CLIENT_SECRET").map_err(|_| anyhow::anyhow!("set EGM_GITHUB_CLIENT_SECRET"))?;
+        }
+        if let Some(g) = &mut c.gitlab {
+            g.client_secret = std::env::var("EGM_GITLAB_CLIENT_SECRET").map_err(|_| anyhow::anyhow!("set EGM_GITLAB_CLIENT_SECRET"))?;
+        }
+        anyhow::ensure!(c.github.is_some() || c.gitlab.is_some(), "configure [github] or [gitlab] sign-in");
+        for p in &c.projects {
+            anyhow::ensure!(valid_name(&p.name) && p.name != crate::SYSTEM, "project name `{}`: use letters, digits, `-` and `_`", p.name);
+            anyhow::ensure!(p.host == "github" || p.host == "gitlab", "project `{}`: host must be github or gitlab", p.name);
+        }
+        c.public_url = c.public_url.trim_end_matches('/').to_string();
+        Ok(c)
+    }
+
+    pub fn project(&self, name: &str) -> Option<&ProjectConfig> {
+        self.projects.iter().find(|p| p.name == name)
+    }
+}
+
+/// Project names, feature slugs and user ids appear in paths and subjects: keep them plain.
+pub fn valid_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names() {
+        assert!(valid_name("jot") && valid_name("gap-ids") && valid_name("a_b1"));
+        assert!(!valid_name("") && !valid_name("../x") && !valid_name("a/b") && !valid_name("a b"));
+    }
+}

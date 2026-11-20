@@ -140,6 +140,9 @@ mod tests {
                         if rs == [Role::Worker] && matches!(a, Action::SubmitReview | Action::ApproveMerge | Action::ChangeRoles | Action::ChangeSettings | Action::CreateFeature) {
                             assert!(!ok, "worker_limited: {a:?}");
                         }
+                        if a == Action::Read {
+                            assert_eq!(ok, !rs.is_empty(), "read_iff_member: {rs:?}");
+                        }
                         // monotone: every superset of an allowed role set is allowed too
                         if ok {
                             for more in subsets().filter(|s| rs.iter().all(|r| s.contains(r))) {
