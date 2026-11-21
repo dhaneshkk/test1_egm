@@ -610,7 +610,7 @@ async fn members(cx: &Cx) -> Result<impl View> {
                 <tr data-user=(id)><td>(login)</td><td>(roles.join(", "))</td><td>(by)</td></tr>
             }
         </table>
-        <p class="muted">"Admins in every project: "(admins.join(", "))". Roles change through the audit log (member.role-changed); editing them in the app comes with phase 3."</p>
+        <p class="muted">"Admins in every project: "(admins.join(", "))". Admins change roles with `egm-team grant`; each change is recorded as member.role-changed, naming who made it."</p>
     })
 }
 
