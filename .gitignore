@@ -1,2 +1,6 @@
 /target
 /target-tc
+
+# deployment secrets and keys
+deploy/.env
+deploy/keys/

@@ -1,0 +1,23 @@
+# cargo deny check advisories: known vulnerabilities in dependencies (SOC 2 CC6.8, CC7.1).
+# CI runs it on every push; a new advisory fails the build until it is fixed or reviewed here.
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "warn"
+# Each ignore needs a reason and a date to look again.
+# zip 2.6.1 comes in through plantuml-core 0.5.4 (egm-dsh's diagram check). Reviewed 2026-11-20:
+# egm-core calls `plantuml_core::render(text)` only. plantuml-core opens a zip archive only for
+# `!import` of a binary the caller supplies, and egm-core supplies none; it reads entries in
+# memory with `ZipArchive`, never extracts to disk, and builds zip without `aes-crypto`. None of
+# these advisories' code paths (extraction, symlinks, permissions, ZipStreamReader, AES) is
+# reachable. Look again when plantuml-core moves to zip >= 9.0.5, or by 2027-02-20.
+ignore = [
+    { id = "RUSTSEC-2026-0367", reason = "zip extraction (SUID bits): never extracted; see above" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extraction (symlink targets): never extracted; see above" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extraction (permissions through symlinks): never extracted; see above" },
+    { id = "RUSTSEC-2026-0429", reason = "zip extraction (symlink size abort): never extracted; see above" },
+    { id = "RUSTSEC-2026-0545", reason = "zip AES entries: built without aes-crypto; see above" },
+    { id = "RUSTSEC-2026-0548", reason = "ZipStreamReader: not used, and no archive is ever opened; see above" },
+]

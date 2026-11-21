@@ -1,0 +1,28 @@
+# egm-team in compose.yml. Secrets come from .env (EGM_*), never from this file.
+listen       = "0.0.0.0:8080"
+public_url   = "https://egm-team.example.com"
+database_url = "host=postgres user=egm dbname=egm"   # with its password: EGM_DATABASE_URL in .env overrides this
+vesdb_url    = "https://vesdb.internal:8443"
+vesdb_ca     = "/caddy/caddy/pki/authorities/local/root.crt"
+admins       = ["github:1234"]
+
+[[project]]
+name           = "field-test"
+checkout       = "/srv/egm/field-testteamwork"
+host           = "github"
+repo           = "dhaneshkk/field-testteamwork"
+base_branch    = "main"
+monthly_tokens = 20000000
+retention_days = 365
+
+[github]
+client_id = "Iv1.replace-me"
+
+[worker]
+egm_dsh  = "/usr/local/bin/egm-dsh"
+pass_env = ["DEEPSEEK_API_KEY"]
+
+[mail]
+host = "smtp.example.com"
+from = "egm-team <egm-team@example.com>"
+username = "egm-team"

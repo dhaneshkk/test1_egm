@@ -26,8 +26,10 @@ path_param!(feature);
 path_param!(job);
 
 /// Write `job.requested`, apply it, wake the worker; returns the job id (the event's id).
-async fn queue(cx: &Cx, p: &str, slug: &str, command: &str, args: Value, actor: &str) -> Result<i64> {
+async fn queue(cx: &Cx, p: &str, slug: &str, command: &str, mut args: Value, actor: &str) -> Result<i64> {
     let a = app(cx);
+    // an idea or an answer is the person's own words: they go in their own event (retention)
+    let text = args.as_object_mut().and_then(|o| o.remove("text")).and_then(|t| t.as_str().map(|s| s.trim().to_string()));
     let ev = AuditEvent {
         kind: "job.requested".into(),
         project: p.into(),
@@ -35,17 +37,21 @@ async fn queue(cx: &Cx, p: &str, slug: &str, command: &str, args: Value, actor: 
         actor: actor.into(),
         data: json!({"command": command, "args": args}),
     };
-    let log = a.log.clone();
-    let key = format!("web/{}", crate::oauth::random_hex(16).ah()?);
-    let written = tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
-    let mut id = None;
-    for w in &written {
-        db::apply(&*a.db, w).await.ah()?;
-        id = Some(w.id as i64);
-    }
+    let written = match text {
+        Some(t) => authz::record_with_words(cx, ev, "args.text", &t).await?,
+        None => {
+            let log = a.log.clone();
+            let key = format!("web/{}", crate::oauth::random_hex(16).ah()?);
+            let written = tokio::task::spawn_blocking(move || log.append(&key, &[ev])).await??;
+            for w in &written {
+                db::apply(&*a.db, w).await.ah()?;
+            }
+            written
+        }
+    };
     a.work.notify_one();
     a.refresh.notify_one();
-    id.ok_or_else(|| topcoat::Error::from_anyhow(anyhow::anyhow!("Vesdb wrote nothing")))
+    written.last().map(|w| w.id as i64).ok_or_else(|| topcoat::Error::from_anyhow(anyhow::anyhow!("Vesdb wrote nothing")))
 }
 
 #[derive(Deserialize)]

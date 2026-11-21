@@ -1,0 +1,84 @@
+# A cloud-neutral egm-team deployment for one host: the app with its worker, Postgres, two Vesdb
+# servers on a shared bucket, a Vesdb witness, and Caddy terminating TLS for the app (public
+# certificate) and for Vesdb (Caddy's internal CA, which egm-team pins with vesdb_ca).
+#
+# On a cloud provider, keep the shape and swap the parts: the bucket for the provider's object
+# storage with Object Lock (s3://, gs://, az://), Postgres for the managed database, Caddy for
+# the load balancer, .env for the secrets store. docs/soc2/OPERATIONS.md has the mapping.
+#
+#   cp .env.example .env && edit it;  docker compose up -d
+name: egm-team
+
+services:
+  caddy:
+    image: caddy:2.10
+    ports: ["443:443", "80:80"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    environment:
+      EGM_DOMAIN: ${EGM_DOMAIN}
+    networks: [public, private]
+    restart: unless-stopped
+
+  egm-team:
+    build: { context: .., dockerfile: deploy/Dockerfile }
+    command: ["serve"]                 # [worker] in the config: the worker runs in this process
+    volumes:
+      - ./egm-team.toml:/etc/egm-team/egm-team.toml:ro
+      - checkouts:/srv/egm             # the project checkouts the worker owns
+      - caddy-data:/caddy:ro           # Caddy's internal CA, pinned as vesdb_ca
+    env_file: .env
+    networks: [private]
+    depends_on: [postgres, vesdb-a, vesdb-b]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: egm
+      POSTGRES_USER: egm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [private]
+    restart: unless-stopped
+
+  vesdb-a: &vesdb
+    image: ${VESDB_IMAGE:-vesdb:local}  # build it from github.com/dhaneshkk/test1_vesdb
+    command: >
+      run --storage file:///bucket --role auto --identity vesdb-a --data-directory /var/lib/vesdb
+          --signing-key-file /keys/log.key --token ${VESDB_APP_TOKEN}=read,write,audit
+          --witness http://vesdb-witness:3101=/keys/witness.key.pub --listen 0.0.0.0:3000
+    volumes: [bucket:/bucket, vesdb-a:/var/lib/vesdb, ./keys:/keys:ro]
+    networks: [private]
+    restart: unless-stopped
+  vesdb-b:
+    <<: *vesdb
+    command: >
+      run --storage file:///bucket --role auto --identity vesdb-b --data-directory /var/lib/vesdb
+          --signing-key-file /keys/log.key --token ${VESDB_APP_TOKEN}=read,write,audit
+          --witness http://vesdb-witness:3101=/keys/witness.key.pub --listen 0.0.0.0:3000
+    volumes: [bucket:/bucket, vesdb-b:/var/lib/vesdb, ./keys:/keys:ro]
+
+  vesdb-witness:
+    # run the witness under a separate account in production, so no single operator can rewrite
+    # the log and its checkpoints together
+    image: ${VESDB_IMAGE:-vesdb:local}
+    entrypoint: ["vesdb-witness"]
+    command: ["run", "--key-file", "/keys/witness.key", "--log-key", "/keys/log.key.pub", "--state-file", "/state/witness.state", "--listen", "0.0.0.0:3101"]
+    volumes: [./keys:/keys:ro, witness:/state]
+    networks: [private]
+    restart: unless-stopped
+
+networks:
+  public: {}
+  private: { internal: true }        # Postgres and Vesdb are never reachable from outside
+
+volumes:
+  caddy-data: {}
+  checkouts: {}
+  pgdata: {}
+  bucket: {}
+  vesdb-a: {}
+  vesdb-b: {}
+  witness: {}

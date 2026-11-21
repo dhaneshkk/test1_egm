@@ -123,6 +123,8 @@ struct State {
 /// Run the worker until the process ends. `wake` is notified when someone queues a job.
 pub async fn run(cfg: Config, log: Arc<dyn AuditLog>, wake: Arc<Notify>) {
     let Some(w) = cfg.worker.clone() else { return };
+    // the worker owns the checkouts, so it also pushes their egm-dsh branches to the code host
+    tokio::spawn(crate::host::run(cfg.clone(), log.clone()));
     let mut client = loop {
         match db::connect(&cfg.database_url).await {
             Ok(c) => break c,
@@ -154,7 +156,18 @@ pub async fn run(cfg: Config, log: Arc<dyn AuditLog>, wake: Arc<Notify>) {
             return;
         }
     };
+    let mut last_purge = std::time::Instant::now() - Duration::from_secs(3600);
     loop {
+        if last_purge.elapsed() >= Duration::from_secs(3600) {
+            last_purge = std::time::Instant::now();
+            for p in st.cfg.projects.iter().filter(|p| p.retention_days.is_some()) {
+                match crate::retention::purge(&*st.db, &p.name, p.retention_days.unwrap_or(0)).await {
+                    Ok(n) if n > 0 => eprintln!("egm-team worker: retention removed {n} row(s) of {}", p.name),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("egm-team worker: retention: {e}"),
+                }
+            }
+        }
         if let Err(e) = db::sync(&mut sync_client, st.log.clone()).await {
             eprintln!("egm-team worker: {e}");
         }

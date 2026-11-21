@@ -32,6 +32,14 @@ pub const APP_TYPES: &[&str] = &[
     "job.requested",
     "job.started",
     "job.finished",
+    "words.recorded",
+    "host.pr-opened",
+    "host.status-set",
+    "merge.completed",
+    "change.reverted",
+    "defect.reported",
+    "ops.restore-tested",
+    "ops.redacted",
 ];
 
 /// The prefix of every egm event type in Vesdb, so `feature.created` is stored as
@@ -125,6 +133,13 @@ pub trait AuditLog: Send + Sync {
     /// Every egm event of every project with an id above `after` (all of them for `None`),
     /// oldest first: what the web app's projector reads to rebuild and refresh its views.
     fn since(&self, after: Option<u64>) -> Result<Vec<Written>, AuditError>;
+
+    /// An offline evidence bundle for these events, which an auditor checks with `vesdb-verify
+    /// bundle` trusting no server (Vesdb: needs the `audit` scope).
+    fn bundle(&self, ids: &[u64]) -> Result<Value, AuditError> {
+        let _ = ids;
+        Err(AuditError::Refused("this audit log cannot make evidence bundles".into()))
+    }
 }
 
 /// An idempotency key for the `seq`-th write of job `job`: stable across retries and
@@ -206,13 +221,42 @@ pub struct VesdbLog {
 
 impl VesdbLog {
     pub fn new(base: &str, token: &str, source: &str) -> Self {
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .build()
-            .into();
+        Self::with_ca(base, token, source, None).expect("no CA to read")
+    }
+
+    /// Like [`VesdbLog::new`], trusting only the certificates in `ca_pem` for `https://` URLs:
+    /// Vesdb behind a TLS proxy with a private CA. `None` trusts the usual public roots.
+    pub fn with_ca(base: &str, token: &str, source: &str, ca_pem: Option<&[u8]>) -> Result<Self, AuditError> {
+        let mut cfg = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(30)));
+        if let Some(pem) = ca_pem {
+            let certs = ureq::tls::parse_pem(pem)
+                .filter_map(|i| match i {
+                    Ok(ureq::tls::PemItem::Certificate(c)) => Some(Ok(c)),
+                    Ok(_) => None,
+                    Err(e) => Some(Err(e)),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AuditError::Protocol(format!("CA file: {e}")))?;
+            if certs.is_empty() {
+                return Err(AuditError::Protocol("CA file holds no certificate".into()));
+            }
+            let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::Specific(std::sync::Arc::new(certs))).build();
+            cfg = cfg.tls_config(tls);
+        }
+        let agent: ureq::Agent = cfg.build().into();
         let bases = base.split(',').map(|b| b.trim().trim_end_matches('/').to_string()).filter(|b| !b.is_empty()).collect();
-        VesdbLog { bases, current: Default::default(), token: token.into(), source: source.into(), agent, retry_for: Duration::from_secs(60) }
+        Ok(VesdbLog { bases, current: Default::default(), token: token.into(), source: source.into(), agent, retry_for: Duration::from_secs(60) })
+    }
+
+    /// Erase these events' payloads (actor and data); every proof stays valid. Needs a token
+    /// with the `redact` scope, which no routine egm-team process holds.
+    pub fn redact(&self, ids: &[u64], reason: &str) -> Result<(), AuditError> {
+        let body = json!({"ids": ids.iter().map(u64::to_string).collect::<Vec<_>>(), "reason": reason}).to_string();
+        let (s, t) = self.call("POST", "/api/v2/management/redact-events", &body, None)?;
+        if s != 200 || t.contains("\"type\":\"error\"") {
+            return Err(AuditError::Refused(format!("HTTP {s}: {}", t.trim())));
+        }
+        Ok(())
     }
 
     fn call(&self, method: &str, path: &str, body: &str, idem: Option<&str>) -> Result<(u16, String), AuditError> {
@@ -260,16 +304,15 @@ impl VesdbLog {
         ok_json(s, &t)
     }
 
-    /// An offline evidence bundle for these events, against the latest cosigned checkpoint
-    /// (needs the `audit` scope). An auditor checks it with `vesdb-verify`, trusting no server.
-    pub fn bundle(&self, ids: &[u64]) -> Result<Value, AuditError> {
-        let body = json!({"ids": ids.iter().map(u64::to_string).collect::<Vec<_>>()}).to_string();
-        let (s, t) = self.call("POST", "/api/v2/tlog/bundle", &body, None)?;
-        ok_json(s, &t)
-    }
 }
 
 fn is_transport(e: &ureq::Error) -> bool {
+    // a certificate the pinned CA does not vouch for is a configuration error, not an outage:
+    // retrying would only delay the message
+    let text = e.to_string().to_lowercase();
+    if text.contains("certificate") || text.contains("unknownissuer") || text.contains("tls") {
+        return false;
+    }
     matches!(e, ureq::Error::Io(_) | ureq::Error::ConnectionFailed | ureq::Error::HostNotFound | ureq::Error::Timeout(_))
 }
 
@@ -341,6 +384,23 @@ impl AuditLog for VesdbLog {
         let body = json!({"subject": "/egm", "options": options}).to_string();
         let (s, t) = self.call("POST", "/api/v2/data/read-events", &body, None)?;
         parse_events(s, &t)
+    }
+
+    /// An offline evidence bundle for these events, against the latest cosigned checkpoint
+    /// (needs the `audit` scope). An auditor checks it with `vesdb-verify`, trusting no server.
+    fn bundle(&self, ids: &[u64]) -> Result<Value, AuditError> {
+        let body = json!({"ids": ids.iter().map(u64::to_string).collect::<Vec<_>>()}).to_string();
+        // Vesdb signs a checkpoint every second or so; events newer than the latest cosigned one
+        // are not provable yet, so wait for the next checkpoint (up to 30 s) instead of failing
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let (s, t) = self.call("POST", "/api/v2/tlog/bundle", &body, None)?;
+            if (t.contains("no cosigned checkpoint covers") || t.contains("is not covered by checkpoint")) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            return ok_json(s, &t);
+        }
     }
 }
 

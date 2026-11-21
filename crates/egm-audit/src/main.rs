@@ -8,7 +8,8 @@
 //!   egm-audit receipt ID                     signed receipt and inclusion proof
 //!   egm-audit bundle ID...                   offline evidence bundle for an auditor
 //!
-//! Vesdb is named by `VESDB_URL` and `VESDB_TOKEN` (never on the command line).
+//! Vesdb is named by `VESDB_URL` and `VESDB_TOKEN` (never on the command line); `VESDB_CA` names a
+//! PEM file of the CA to trust for an `https://` URL (Vesdb behind a TLS proxy).
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
@@ -48,7 +49,11 @@ fn vesdb() -> anyhow::Result<VesdbLog> {
     let url = std::env::var("VESDB_URL").context("set VESDB_URL")?;
     let token = std::env::var("VESDB_TOKEN").context("set VESDB_TOKEN")?;
     let source = std::env::var("EGM_SOURCE").unwrap_or_else(|_| "https://egm-team.local".into());
-    Ok(VesdbLog::new(&url, &token, &source))
+    let ca = match std::env::var("VESDB_CA") {
+        Ok(p) => Some(std::fs::read(&p).with_context(|| format!("VESDB_CA: cannot read {p}"))?),
+        Err(_) => None,
+    };
+    Ok(VesdbLog::with_ca(&url, &token, &source, ca.as_deref())?)
 }
 
 /// The domain events in an `--events` file, in order.

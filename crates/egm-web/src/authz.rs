@@ -112,6 +112,31 @@ pub async fn record_now(cx: &Cx, ev: AuditEvent) -> topcoat::Result<()> {
     Ok(())
 }
 
+/// Record an action that carries a person's own words (a comment, a review note, an idea or an
+/// answer to the elephant). The words go in their own `words.recorded` event, written in the same
+/// atomic batch just before the action, which names them by a random key. Retention can then
+/// redact the words in Vesdb and keep who did what, and when (`egm-team redact`).
+pub async fn record_with_words(cx: &Cx, mut ev: AuditEvent, field: &str, words: &str) -> topcoat::Result<Vec<egm_audit::Written>> {
+    let a = app(cx);
+    let wkey = crate::oauth::random_hex(16).ah()?;
+    let w = AuditEvent {
+        kind: "words.recorded".into(),
+        project: ev.project.clone(),
+        feature: ev.feature.clone(),
+        actor: ev.actor.clone(),
+        data: json!({"key": wkey, "field": field, "text": words}),
+    };
+    ev.data["words"] = json!(wkey);
+    let log = a.log.clone();
+    let key = format!("web/{}", crate::oauth::random_hex(16).ah()?);
+    let written = tokio::task::spawn_blocking(move || log.append(&key, &[w, ev])).await??;
+    for w in &written {
+        db::apply(&*a.db, w).await.ah()?;
+    }
+    a.refresh.notify_one();
+    Ok(written)
+}
+
 /// The projects the viewer may read.
 pub async fn readable_projects(cx: &Cx, v: &Viewer) -> topcoat::Result<Vec<String>> {
     let mut out = vec![];

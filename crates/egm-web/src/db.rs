@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS usage (
     id bigint PRIMARY KEY, project text NOT NULL, feature text NOT NULL, role text NOT NULL,
     model text NOT NULL, tokens bigint NOT NULL, cost double precision, estimated boolean NOT NULL,
     at text NOT NULL);
+CREATE TABLE IF NOT EXISTS words (
+    key text PRIMARY KEY, project text NOT NULL, event_id bigint NOT NULL, text text NOT NULL);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash bytea PRIMARY KEY, user_id text NOT NULL, expires_at timestamptz NOT NULL);
 "#;
@@ -69,7 +71,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 /// Not projected: `sessions`; `activity` (measured minutes, not events); `outbox` (kept across
 /// rebuilds so a rebuild never mails anyone twice); `job_log` (a job's terminal output, which
 /// may quote code, so it is kept in Postgres only, never in the audit log).
-const PROJECTED: &[&str] = &["timeline", "jobs", "usage", "comments", "labels", "reviews", "approvals", "features", "members", "users", "egm_meta"];
+const PROJECTED: &[&str] = &["timeline", "words", "jobs", "usage", "comments", "labels", "reviews", "approvals", "features", "members", "users", "egm_meta"];
 
 pub async fn connect(url: &str) -> anyhow::Result<Client> {
     let (client, conn) = tokio_postgres::connect(url, NoTls).await?;
@@ -117,10 +119,17 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
             )
             .await?;
         }
+        ("words.recorded", _) => {
+            // a redacted event has no data: its words are gone, and stay gone after a rebuild
+            if let (Some(k), Some(t)) = (w.data["key"].as_str(), w.data["text"].as_str()) {
+                c.execute("INSERT INTO words (key, project, event_id, text) VALUES ($1,$2,$3,$4) ON CONFLICT (key) DO NOTHING", &[&k, &project, &id, &t]).await?;
+            }
+        }
         ("comment.added", false) => {
+            let body = words_of(c, &w.data, "text").await?;
             c.execute(
                 "INSERT INTO comments (id, project, feature, target, author, body, at) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING",
-                &[&id, &project, &feature, &w.data["target"].as_str().unwrap_or("doc"), &w.actor, &w.data["text"].as_str().unwrap_or_default(), &w.time],
+                &[&id, &project, &feature, &w.data["target"].as_str().unwrap_or("doc"), &w.actor, &body, &w.time],
             )
             .await?;
             notify_author(c, id, project, feature, &w.actor, &format!("{} commented on {feature}", who(c, &w.actor).await?)).await?;
@@ -138,7 +147,7 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
         ("review.submitted", false) => {
             c.execute(
                 "INSERT INTO reviews (id, project, feature, reviewer, verdict, note, doc_hash, at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING",
-                &[&id, &project, &feature, &w.actor, &w.data["verdict"].as_str().unwrap_or_default(), &w.data["note"].as_str().unwrap_or_default(), &w.data["doc_hash"].as_str().unwrap_or_default(), &w.time],
+                &[&id, &project, &feature, &w.actor, &w.data["verdict"].as_str().unwrap_or_default(), &words_of(c, &w.data, "note").await?, &w.data["doc_hash"].as_str().unwrap_or_default(), &w.time],
             )
             .await?;
             let what = if w.data["verdict"] == "approve" { "approved" } else { "asked for changes to" };
@@ -153,10 +162,14 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
             notify_author(c, id, project, feature, &w.actor, &format!("{} approved the merge of {feature}", who(c, &w.actor).await?)).await?;
         }
         ("job.requested", false) => {
+            let mut args = w.data["args"].clone();
+            if w.data.get("words").is_some() && args.is_object() {
+                args["text"] = json!(words_of(c, &w.data, "").await?);
+            }
             c.execute(
                 "INSERT INTO jobs (id, project, feature, command, args, requester, state, queued_at) VALUES ($1,$2,$3,$4,$5,$6,'queued',$7)
                  ON CONFLICT (id) DO NOTHING",
-                &[&id, &project, &feature, &w.data["command"].as_str().unwrap_or_default(), &w.data["args"], &w.actor, &w.time],
+                &[&id, &project, &feature, &w.data["command"].as_str().unwrap_or_default(), &args, &w.actor, &w.time],
             )
             .await?;
         }
@@ -233,6 +246,19 @@ pub async fn apply(c: &impl GenericClient, w: &Written) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// What a person wrote for an action: inline in older events (`field`), or in the
+/// `words.recorded` event the action names. Redacted words read as a notice.
+pub const REDACTED: &str = "(removed under the retention policy)";
+
+async fn words_of(c: &impl GenericClient, data: &Value, field: &str) -> anyhow::Result<String> {
+    if let Some(t) = data.get(field).and_then(|v| v.as_str()) {
+        return Ok(t.to_string());
+    }
+    let Some(k) = data["words"].as_str() else { return Ok(String::new()) };
+    let row = c.query_opt("SELECT text FROM words WHERE key=$1", &[&k]).await?;
+    Ok(row.map(|r| r.get(0)).unwrap_or_else(|| REDACTED.to_string()))
 }
 
 /// A person's login for mail text (their id when they never signed in).
@@ -679,4 +705,21 @@ pub async fn project_usage(c: &impl GenericClient, project: &str) -> anyhow::Res
         )
         .await?;
     Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+}
+
+/// Defects reported against a merged change: (who, note, when).
+pub async fn defects(c: &impl GenericClient, project: &str, feature: &str) -> anyhow::Result<Vec<(String, String, String)>> {
+    let rows = c
+        .query(
+            "SELECT COALESCE(u.login, t.actor), t.data, t.at FROM timeline t LEFT JOIN users u ON u.id = t.actor
+             WHERE t.project=$1 AND t.feature=$2 AND t.kind='defect.reported' ORDER BY t.id",
+            &[&project, &feature],
+        )
+        .await?;
+    let mut out = vec![];
+    for r in rows {
+        let data: Value = r.get(1);
+        out.push((r.get(0), words_of(c, &data, "note").await?, r.get(2)));
+    }
+    Ok(out)
 }

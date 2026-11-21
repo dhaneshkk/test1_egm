@@ -107,8 +107,8 @@ pub async fn comment(cx: &Cx, Form(form): Form<CommentForm>) -> Result<SeeOther>
     if text.is_empty() || text.len() > MAX_TEXT || !valid_target(&form.target) {
         return Err(bad_request(format!("a comment needs a target and 1 to {MAX_TEXT} characters")).into());
     }
-    let data = json!({"target": form.target, "text": text, "doc_hash": st.doc_hash});
-    authz::record_now(cx, event("comment.added", p, slug, &v.id, data)).await?;
+    let data = json!({"target": form.target, "doc_hash": st.doc_hash});
+    authz::record_with_words(cx, event("comment.added", p, slug, &v.id, data), "text", text).await?;
     db::touch(&*app(cx).db, &v.id, p, slug).await.ah()?;
     Ok(back(p, slug, "comments"))
 }
@@ -132,8 +132,8 @@ pub async fn review(cx: &Cx, Form(form): Form<ReviewForm>) -> Result<SeeOther> {
     if !st.merge.built {
         return Err(bad_request("the feature is not built yet; review the design doc with a comment instead").into());
     }
-    let data = json!({"verdict": form.verdict, "note": form.note.trim(), "doc_hash": st.doc_hash});
-    authz::record_now(cx, event("review.submitted", p, slug, &v.id, data)).await?;
+    let data = json!({"verdict": form.verdict, "doc_hash": st.doc_hash});
+    authz::record_with_words(cx, event("review.submitted", p, slug, &v.id, data), "note", form.note.trim()).await?;
     db::touch(&*app(cx).db, &v.id, p, slug).await.ah()?;
     Ok(back(p, slug, "review"))
 }
@@ -329,7 +329,7 @@ pub async fn collab_panel(cx: &Cx, p: &str, slug: &str) -> Result<impl View> {
             </ul>
         }
         if st.approved {
-            <p class="ok" id="merge-approved">"Approved for merge. Merging on GitHub or GitLab comes with phase 5."</p>
+            <p class="ok" id="merge-approved">"Approved for merge. Merge it on GitHub or GitLab: the egm/merge-approval status there is green once the evidence gate is too."</p>
         } else {
             match &merge_reason {
                 None => <form method="POST" action=(format!("/p/{p}/f/{slug}/approve"))><button id="approve-merge">"Approve merge"</button></form>,

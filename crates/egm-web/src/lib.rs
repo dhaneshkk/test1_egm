@@ -13,9 +13,14 @@ pub mod checkout;
 pub mod collab;
 pub mod config;
 pub mod db;
+pub mod host;
 pub mod jobs;
 pub mod mail;
+pub mod metrics;
 pub mod oauth;
+pub mod retention;
+pub mod security;
+pub mod soc2;
 pub mod worker;
 
 use std::sync::Arc;
