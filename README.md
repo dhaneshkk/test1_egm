@@ -951,6 +951,8 @@ egm-audit bundle 0 1 2                            # offline evidence bundle; che
 
 ![A feature in egm-team: the design doc, its revisions, goldfish reviews, evidence and history](docs/screenshots/04-feature-page.png)
 
+Every page of the app, with a screenshot and what you can do there, is in the user guide: [the pages, one by one](docs/USER_GUIDE.md#the-pages-one-by-one).
+
 More screens in the [user guide](docs/USER_GUIDE.md#screens).
 
 **Where the data comes from.** Postgres holds views rebuilt from the Vesdb audit log (`egm-team rebuild` drops and replays them); words people read (docs, review findings, evidence) come from the project's checkout, read-only. The log, not the database, is the record.

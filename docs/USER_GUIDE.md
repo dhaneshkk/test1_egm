@@ -9,13 +9,13 @@ This guide is task-first. Find your role, follow the steps. The [README](../READ
 | The person who runs egm-team for the team | `egm-team`, Postgres, Vesdb | [Part 3](#part-3-running-egm-team) |
 | An auditor checking the record | `egm-audit`, `vesdb-verify` | [Part 4](#part-4-auditors-checking-the-record) |
 
-What exists today: the command line (complete), the audit path into Vesdb, and the web app's read-only view (sign-in, projects, features, docs, reviews, evidence, metrics, members, audit trail). Comments, approvals and running egm-dsh from the browser are planned (phases 3 to 5 of the [implementation plan](https://claude.ai/artifact/J4NTLcJfrnrnbUGuH6ERpW)) and are marked *not yet* below.
+What exists today: the command line; the audit path into Vesdb; and the team web app. The web app covers sign-in, projects, features, docs, reviews and evidence, plus running egm-dsh from the browser, comments, alarm labels, reviews and merge approval with separation of duties. It also connects to GitHub and GitLab (pull and merge requests, commit statuses, webhooks), shows metrics and cost, and exports evidence for SOC 2. All five phases of the [implementation plan](https://claude.ai/artifact/J4NTLcJfrnrnbUGuH6ERpW) are built; the production field test is next. Every screen of the web app is shown in [The pages, one by one](#the-pages-one-by-one).
 
 ## Contents
 
 - [Install](#install)
 - [Part 1: developers, the egm-dsh command line](#part-1-developers-the-egm-dsh-command-line)
-- [Part 2: the team web app](#part-2-the-team-web-app)
+- [Part 2: the team web app](#part-2-the-team-web-app) (with [every page, one by one](#the-pages-one-by-one))
 - [Part 3: running egm-team](#part-3-running-egm-team)
 - [Part 4: auditors, checking the record](#part-4-auditors-checking-the-record)
 - [Reference](#reference)
@@ -172,18 +172,157 @@ VESDB_URL=https://vesdb.example VESDB_TOKEN=... \
 
 Open the address your admin gave you and choose **Sign in with GitHub** or **Sign in with GitLab**. egm-team asks the provider only who you are; it never sees your password or your repositories. If you see "You are not a member of any project yet", ask an admin to add you (Part 3, step 6).
 
-### Find your way
+### A feature from idea to merge
 
-| Page | What you see |
+The usual path, with who does each step. Everything is on the feature's page unless it says otherwise.
+
+| Step | Who | What they do | What the app records |
+|---|---|---|---|
+| 1 | Developer | **New feature** on the board: a name and the idea | `job.requested`; the elephant's questions appear in the Design chat |
+| 2 | Developer | Answers the elephant in the **Design chat**, then **Draft the design doc** | one job per answer; the doc lands in the checkout |
+| 3 | Developer | **Goldfish**: fresh reviewers test the doc; answers what they could not, redrafts the sections they name, runs Goldfish again until it is ready | `goldfish.verdict`; the phase moves to *ready* |
+| 4 | Reviewer | Labels each goldfish alarm **Real** or **Noise** | `alarm.labelled`; this scores the goldfish (Metrics) |
+| 5 | Developer | **Build**, **Review**, **Gate** | `build.completed`, `review.completed`, `gate.verdict`; on GitHub or GitLab the branch is pushed, a pull or merge request opened, `egm/evidence-gate` set |
+| 6 | Reviewer or approver | Finds the feature in the **Review inbox**, comments, then **Approve** (or **Request changes** with a note) | `review.submitted`; the author is mailed |
+| 7 | Reviewer (low or medium risk) or approver (high risk) | **Approve merge**, once the panel's four checks are green | `merge.approved`; `egm/merge-approval` turns green on the code host |
+| 8 | Anyone with merge rights on the code host | Merges the pull or merge request | `merge.completed` from the webhook; a later revert or a **Report a defect** counts against the gate |
+
+The author can do steps 1, 2, 3 and 5, and comment, but never 6 or 7 on their own feature.
+
+### The pages, one by one
+
+The screenshots come from the browser tests (`tests/e2e/run_web_e2e.py`, `run_jobs_e2e.py`, `run_host_e2e.py`). Those tests run real egm-dsh output, the worker, Vesdb and Postgres, with fake GitHub and GitLab servers. Every page has the same header: **Review inbox**, your login, and **Sign out**. Every project page has the same tabs: **Features**, **Jobs**, **Metrics**, **Members** and **Audit trail**.
+
+#### Sign in (`/sign-in`)
+
+![Sign in](screenshots/01-sign-in.png)
+
+Choose **Sign in with GitHub** or **Sign in with GitLab**. egm-team asks only who you are. Sign-in links expire after ten minutes and work only in the browser tab that started them.
+
+#### Projects (`/`)
+
+![Projects](screenshots/02-projects.png)
+
+The projects you hold a role in, with their feature count and code host. Signed in without any role, you see a note to ask an admin instead:
+
+![Signed in, no role yet](screenshots/09-outsider-no-projects.png)
+
+#### Feature board (`/p/<project>`)
+
+![Feature board](screenshots/03-feature-board.png)
+
+One column per phase (*designing*, *ready*, *built*, *hardened*), newest change first. A red line on a card means the feature's history in the audit log contains a step the gate refuses; tell your admin. Developers see **New feature** above the board, and any running or queued jobs:
+
+![Starting a feature](screenshots/19-new-feature.png)
+
+#### Feature page (`/p/<project>/f/<feature>`)
+
+The page you will use most. From top to bottom:
+
+![The whole feature page](screenshots/28-feature-page-full.png)
+
+1. **Phase, doc path and doc hash.**
+2. **Design chat** (features started from the app): your messages and the elephant's replies, and a box to answer it. **Run**: Draft (tick sections to redraft only those), Goldfish, Build, Review and Gate. **Jobs**: this feature's last ten jobs. **Cost**: tokens and dollars by role and model.
+
+   ![Design chat](screenshots/21-design-chat.png)
+
+   ![Run buttons, jobs and cost](screenshots/22-run-jobs-cost.png)
+
+3. **Design doc** as it is in the checkout, and its **revisions** (git commits that changed it).
+4. **Goldfish reviews**: each round's verdict and how many alarms it kept.
+5. **Goldfish alarms**: one row per alarm, with **Real** and **Noise** buttons for reviewers and approvers. **Comments** follow, on the whole doc, a section or an alarm.
+
+   ![Alarm labels and comments](screenshots/15-labels-comments.png)
+
+6. **Reviews** and the **Merge approval** panel: the four checks, who approved, and why you cannot approve if you cannot.
+
+   ![Reviews and the merge panel](screenshots/16-review-merge.png)
+
+   The author sees why they cannot review their own work:
+
+   ![The author's view](screenshots/18-author-view.png)
+
+7. **Code host**: the pull or merge request, both commit statuses now and as last set on the host, the merge, any revert, reported defects, **Report a defect**, and **Export the audit bundle**.
+
+   ![Code host](screenshots/26-code-host.png)
+
+8. **Evidence**: the evidence gate's checks, risk tier, seeded-bug score and drift. **History**: every event of the feature.
+
+   ![Feature page, top](screenshots/04-feature-page.png)
+
+#### The doc at a revision (`/p/<project>/f/<feature>/rev/<commit>`)
+
+![Doc at a revision](screenshots/05-doc-at-revision.png)
+
+The design doc exactly as it was at that commit, linked from the feature's revision list.
+
+#### Jobs (`/p/<project>/jobs`) and a job (`/p/<project>/jobs/<id>`)
+
+![Job queue](screenshots/23-jobs-queue.png)
+
+Every job run from the app, newest first, with its state (queued, running, done, failed, refused, abandoned) and tokens. The line at the top shows this month's tokens and the ceiling. One job runs at a time per project; a waiting job says how many run before it.
+
+![A running job](screenshots/20-job-running.png)
+
+A job page follows the job as it runs, line by line, and keeps the output afterwards. When a job is refused, the page says why:
+
+![Refused at the ceiling](screenshots/24-ceiling-refused.png)
+
+#### Review inbox (`/inbox`)
+
+![Review inbox](screenshots/14-review-inbox.png)
+
+Features waiting for your review in every project where you review. Each one is built, its evidence gate passed for the current doc, nobody has approved it yet, and you did not write it. Highest risk first.
+
+#### Metrics (`/p/<project>/metrics`)
+
+![Metrics](screenshots/06-metrics.png)
+
+From top to bottom:
+
+- features by phase, and goldfish and gate verdict counts;
+- the **goldfish MCC** from reviewers' labels, with its confusion matrix and the 29-per-class warning;
+- **human minutes** per feature;
+- **review times**: medians with 95% intervals;
+- **gate outcomes** after merge;
+- **cost** by feature, and this month's tokens against the ceiling;
+- event counts.
+
+![Goldfish MCC and human minutes](screenshots/17-metrics-mcc.png)
+
+![Review times and gate outcomes](screenshots/27-review-gate-metrics.png)
+
+![Cost and the ceiling](screenshots/25-metrics-cost.png)
+
+#### Members (`/p/<project>/members`)
+
+![Members](screenshots/07-members.png)
+
+Who holds which roles, and who granted them. Admins change roles with `egm-team grant` (Part 3); the page is read-only.
+
+#### Audit trail (`/p/<project>/audit`)
+
+![Audit trail](screenshots/08-audit-trail.png)
+
+Every event of the project, newest first: who, what, when, and the event's data (hashes, counts and verdicts, never code). Each is in Vesdb's tamper-evident log. With a code host connected, the statuses egm-team set, merges, reverts and refused webhooks appear here too:
+
+![Audit trail with code-host events](screenshots/29-audit-trail-code-host.png)
+
+#### When you may not see something
+
+![No access](screenshots/10-outsider-no-access.png)
+
+![Not found](screenshots/11-not-found.png)
+
+A project you hold no role in gives **No access** (403), and the refusal is recorded. A feature, revision or job that does not exist gives **Not found** (404).
+
+#### On a phone
+
+| | |
 |---|---|
-| **Projects** (home) | The projects you belong to, with their feature count |
-| **Features** (`/p/<project>`) | The board: one column per phase, newest change first. A red line on a card means the feature's history in the audit log contains a step the gate refuses; tell your admin |
-| **Feature** (click a card) | The design doc as it is in the checkout; its git revisions (click one to read the doc as it was then); every goldfish review round with its verdict and how many alarms it kept; the evidence gate's checks, risk tier and seeded-bug score; the feature's audit history |
-| **Jobs** (`/p/<project>/jobs`) | Every egm-dsh job run from the app: queued, running, done, failed or refused, with its tokens. Click one to read its output |
-| **Review inbox** (header link) | Features waiting for your review in every project where you review: built, the evidence gate passed for the current doc, not yet approved, not written by you. Highest risk first |
-| **Metrics** | Features by phase, goldfish and evidence-gate verdict counts; the goldfish MCC from reviewers' labels; human minutes per feature, measured from activity in the app; review times (medians with 95% intervals); gate outcomes after merge; cost |
-| **Members** | Who holds which roles in the project |
-| **Audit trail** | Every recorded event of the project, newest first. Each one is in Vesdb's tamper-evident log and can be verified offline |
+| ![Board on a phone](screenshots/12-board-phone.png) | ![Feature page on a phone](screenshots/13-feature-phone.png) |
+
+Every page fits a phone's width; wide tables scroll sideways inside the page.
 
 ### Run egm-dsh from the browser
 
@@ -220,35 +359,15 @@ When the project has a repository configured, everything above shows up on the c
 
 **Minutes.** Each time you open a feature or act on it, egm-team adds the time since your previous visit or action, at most 30 minutes (a longer gap is time away), the same way egm-dsh counts human minutes. Nothing else about your activity is kept.
 
-### Screens
-
-Captured by the browser test (`tests/e2e/run_web_e2e.py`) against real egm-dsh output, Vesdb and Postgres, with a fake GitHub and GitLab for sign-in.
-
-| | |
-|---|---|
-| ![Sign in](screenshots/01-sign-in.png) **Sign in** | ![Projects](screenshots/02-projects.png) **Projects** |
-| ![Feature board](screenshots/03-feature-board.png) **Feature board** | ![Feature page](screenshots/04-feature-page.png) **Feature: doc, revisions, reviews, evidence, history** |
-| ![Doc at a revision](screenshots/05-doc-at-revision.png) **The doc at a past commit** | ![Metrics](screenshots/06-metrics.png) **Metrics** |
-| ![Members](screenshots/07-members.png) **Members** | ![Audit trail](screenshots/08-audit-trail.png) **Audit trail** |
-| ![No projects](screenshots/09-outsider-no-projects.png) **Signed in, no role yet** | ![No access](screenshots/10-outsider-no-access.png) **403: no role in this project** |
-| ![Phone board](screenshots/12-board-phone.png) **Board on a phone** | ![Phone feature](screenshots/13-feature-phone.png) **Feature page on a phone** |
-| ![Review inbox](screenshots/14-review-inbox.png) **Review inbox, highest risk first** | ![Alarm labels and comments](screenshots/15-labels-comments.png) **Labelling alarms, comments** |
-| ![Reviews and merge approval](screenshots/16-review-merge.png) **Reviews and the merge panel** | ![Goldfish MCC](screenshots/17-metrics-mcc.png) **Goldfish MCC from labels, human minutes** |
-| ![Author's view](screenshots/18-author-view.png) **The author's view: no review, no approval** | ![New feature](screenshots/19-new-feature.png) **Starting a feature from the board** |
-| ![Job running](screenshots/20-job-running.png) **A job page following a running job** | ![Design chat](screenshots/21-design-chat.png) **The design chat with the elephant** |
-| ![Run panel](screenshots/22-run-jobs-cost.png) **Run buttons and the feature's jobs** | ![Jobs](screenshots/23-jobs-queue.png) **The project's job queue** |
-| ![Refused at the ceiling](screenshots/24-ceiling-refused.png) **A job refused at the monthly ceiling** | ![Cost](screenshots/25-metrics-cost.png) **Tokens this month and cost per feature** |
-| ![Code host](screenshots/26-code-host.png) **Pull request, both commit statuses, the merge and a revert** | ![Review times](screenshots/27-review-gate-metrics.png) **Review times and gate outcomes** |
-
 ### What you can do with each role
 
-| Role | Can (today) | Will be able to |
-|---|---|---|
-| developer | read, comment, start features, run egm-dsh jobs | |
-| reviewer | read, comment, label alarms, review, approve low- and medium-risk merges | |
-| approver | everything a reviewer can, and approve high-risk merges | export evidence |
-| admin | read | change members, roles and project settings in the app, export evidence |
-| auditor | read | export evidence |
+| Role | Can |
+|---|---|
+| developer | read, comment, report a defect, start features, run egm-dsh jobs |
+| reviewer | read, comment, report a defect, label alarms, review, approve low- and medium-risk merges |
+| approver | everything a reviewer can, approve high-risk merges, export the audit bundle |
+| admin | read, export the audit bundle; roles change with `egm-team grant` on the server, not in the app |
+| auditor | read, export the audit bundle |
 
 Nobody can review or approve a feature they wrote, whatever roles they hold.
 
@@ -260,7 +379,7 @@ Nobody can review or approve a feature they wrote, whatever roles they hold.
 - **A job says "abandoned"**: the worker stopped while it ran (a restart or crash). Its egm-dsh process stopped with it, so nothing changed unrecorded; run the step again.
 - **"cannot approve yet: …"**: the merge panel's reason, such as no approving review by someone else yet, or a gate that passed for an older doc. The attempt is recorded too.
 - **Sign-in failed**: start again from the sign-in page in the same browser tab. Sign-in links expire after ten minutes and work only in the browser that started them.
-- **The page is out of date**: the app reads new events every second or so. A doc change shows once it is pushed to the team's checkout.
+- **The page is out of date**: the app reads new events every second or so; reload. A running job's page updates by itself.
 
 ## Part 3: running egm-team
 
@@ -270,7 +389,7 @@ Nobody can review or approve a feature they wrote, whatever roles they hold.
 |---|---|
 | `egm-team serve` | The web app. Stateless apart from Postgres, so you can run more than one. With a `[worker]` section it also runs the worker |
 | `egm-team worker` | The worker alone, for running jobs on another machine. It needs the checkouts, egm-dsh and the model key; run one per deployment (a per-project database lock keeps a second one off a busy project) |
-| PostgreSQL | Views of the audit log, plus sessions. Disposable: `egm-team rebuild` recreates every view from Vesdb |
+| PostgreSQL | Views of the audit log, sessions, job output and the mail outbox. `egm-team rebuild` recreates every view from Vesdb; only job output and sessions live in Postgres alone |
 | Vesdb | The record. Run it highly available as its README describes: two servers on a shared bucket (`--role auto`), at least one witness under a separate account |
 | The project checkout | The git clone egm-dsh works in. The worker owns it: jobs run there, and the app reads docs, reviews and evidence from it. Initialise it once with `egm-dsh init`, and give it a git identity for build commits |
 | GitHub and/or GitLab OAuth apps | Sign-in |
